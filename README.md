@@ -31,7 +31,7 @@ Save the exported cookies as `cookies.txt` in the `/config` folder of OrpheusDL.
 
 1. Go to your orpheusdl/ directory and run:
 ```bash
-git clone https://github.com/bascurtiz/orpheusdl-beatport modules/applemusic
+git clone https://github.com/bascurtiz/orpheusdl-applemusic modules/applemusic
 ```
 
 2. cd into modules/applemusic/gamdl and run:
