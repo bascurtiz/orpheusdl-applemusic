@@ -52,7 +52,7 @@ Now the config/settings.json file should be updated with the Apple Music setting
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `cookies_path` | `./gamdl/cookies.txt` | Path to your Apple Music cookies file |
+| `cookies_path` | `./config/cookies.txt` | Path to your Apple Music cookies file |
 | `language` | `en-US` | Language for metadata (ISO language code) |
 | `codec` | `aac` | Preferred codec (`aac` or `alac`) |
 | `quality` | `high` | Quality preference |
