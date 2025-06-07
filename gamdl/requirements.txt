@@ -1,0 +1,5 @@
+m3u8
+mutagen
+pillow
+pywidevine
+yt-dlp
