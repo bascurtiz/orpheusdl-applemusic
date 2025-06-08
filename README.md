@@ -25,7 +25,12 @@ You need to export your Apple Music cookies to authenticate with the service.
 3. Export cookies using a browser extension like:
    - **Chrome/Edge**: [Get cookies.txt LOCALLY](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)
    - **Firefox**: [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/)
-Save the exported cookies as `cookies.txt` in the `/config` folder of OrpheusDL.
+Save the exported cookies as `cookies.txt` in the `/config` folder of OrpheusDL.<br>
+
+### 3. FFmpeg
+Make sure FFmpeg path is set in settings.json, or put it to your OS environment.<br>
+- Instructions for macOS: https://phoenixnap.com/kb/ffmpeg-mac<br>
+- Instructions for Win: https://phoenixnap.com/kb/ffmpeg-windows<br>
 
 ## Installation
 
@@ -53,7 +58,7 @@ If both methods fail, run directly in Terminal:
 ```
 (Replace `3.11` with your Python version)
 
-### All Platforms Setup
+### All Platforms Setup (Windows/macOS/Linux)
 
 1. Go to your orpheusdl/ directory and run:
 ```bash
@@ -67,6 +72,7 @@ pip install -r requirements.txt
 
 3. **Place your cookies file**:<br>
 Put your `cookies.txt` file in the `/config` folder (next to settings.json)
+See ### 2. Cookies File
 
 4. Execute:
 ```bash
@@ -74,28 +80,15 @@ python orpheus.py
 ```
 Now the config/settings.json file should be updated with the Apple Music settings.
 
-5. Make sure FFmpeg path is set in settings.json, or put it to your OS environment.<br>
-   Instructions for macOS: https://phoenixnap.com/kb/ffmpeg-mac<br>
-   Instructions for Win: https://phoenixnap.com/kb/ffmpeg-windows<br>
-
-## Configuration Options
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `cookies_path` | `./config/cookies.txt` | Path to your Apple Music cookies file |
-| `language` | `en-US` | Language for metadata (ISO language code) |
-| `codec` | `aac` | Preferred codec (`aac` or `alac`) |
-| `quality` | `high` | Quality preference |
-
 ## Usage
 
 ### Downloading
 The module supports standard Apple Music URLs:
 
-- **Track**: `python orpheus.py https://music.apple.com/us/song/never-gonna-give-you-up-2022-remaster/1612648319`
-- **Album**: `python orpheus.py https://music.apple.com/us/album/whenever-you-need-somebody-deluxe-edition-2022-remaster/1612648318`
-- **Playlist**: `python orpheus.py https://music.apple.com/us/playlist/rick-astley-essentials/pl.504a9420747e43ec93e4faa999a8bef9`
-- **Artist**: `python orpheus.py https://music.apple.com/us/artist/rick-astley/669771`
+- **Track**: `python orpheus.py https://music.apple.com/us/song/trackname/id`
+- **Album**: `python orpheus.py https://music.apple.com/us/album/albumname/id`
+- **Playlist**: `python orpheus.py https://music.apple.com/us/playlist/playlistname/pl.hashstring`
+- **Artist**: `python orpheus.py https://music.apple.com/us/artist/artistname/id`
 
 ### Searching
 Use the Search tab in OrpheusDL GUI to search Apple Music:
@@ -107,7 +100,6 @@ Use the Search tab in OrpheusDL GUI to search Apple Music:
 ## Audio Quality
 
 - **AAC**: 256 kbps (standard Apple Music quality)
-- **ALAC**: Lossless (when available and subscription supports it)
 - **Sample Rate**: 44.1 kHz (standard) or 48 kHz (some content)
 
 ## Troubleshooting
