@@ -39,7 +39,8 @@ git clone https://github.com/bascurtiz/orpheusdl-applemusic modules/applemusic
 pip install -r requirements.txt
 ```
 
-3. **Place your cookies file**: Put your `cookies.txt` file in the `/config` folder (next to settings.json)
+3. **Place your cookies file**:<br>
+Put your `cookies.txt` file in the `/config` folder (next to settings.json)
 
 4. Execute:
 ```bash
@@ -47,9 +48,9 @@ python orpheus.py
 ```
 Now the config/settings.json file should be updated with the Apple Music settings.
 
-5. Make sure FFmpeg path is set in settings.json, or put it to your OS environment.
-   Instructions for macOS: https://phoenixnap.com/kb/ffmpeg-mac
-   Instructions for Win: https://phoenixnap.com/kb/ffmpeg-windows
+5. Make sure FFmpeg path is set in settings.json, or put it to your OS environment.<br>
+   Instructions for macOS: https://phoenixnap.com/kb/ffmpeg-mac<br>
+   Instructions for Win: https://phoenixnap.com/kb/ffmpeg-windows<br>
 
 
 ## Configuration Options
