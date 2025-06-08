@@ -27,7 +27,33 @@ You need to export your Apple Music cookies to authenticate with the service.
    - **Firefox**: [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/)
 Save the exported cookies as `cookies.txt` in the `/config` folder of OrpheusDL.
 
-## Setup
+## Installation
+
+### macOS Users - Important SSL Setup!
+Before using this module, you **must** install SSL certificates to avoid connection errors:
+
+#### **Quick Method** (Recommended):
+1. Open Terminal
+2. Run this command (replace `3.11` with your Python version):
+   ```bash
+   open "/Applications/Python 3.11/Install Certificates.command"
+   ```
+3. Wait for the installation to complete
+
+#### **Alternative Method**:
+If the above doesn't work, try:
+```bash
+pip3 install --upgrade certifi
+```
+
+#### **Manual Installation**:
+If both methods fail, run directly in Terminal:
+```bash
+/Applications/Python\ 3.11/Install\ Certificates.command
+```
+(Replace `3.11` with your Python version)
+
+### All Platforms Setup
 
 1. Go to your orpheusdl/ directory and run:
 ```bash
@@ -51,7 +77,6 @@ Now the config/settings.json file should be updated with the Apple Music setting
 5. Make sure FFmpeg path is set in settings.json, or put it to your OS environment.<br>
    Instructions for macOS: https://phoenixnap.com/kb/ffmpeg-mac<br>
    Instructions for Win: https://phoenixnap.com/kb/ffmpeg-windows<br>
-
 
 ## Configuration Options
 
@@ -87,6 +112,35 @@ Use the Search tab in OrpheusDL GUI to search Apple Music:
 
 ## Troubleshooting
 
+### SSL Certificate Errors (macOS)
+**Error**: `certificate verify failed: unable to get local issuer certificate`
+
+**Solution**:
+1. **Quick Fix**: Run this in Terminal (replace `3.11` with your Python version):
+   ```bash
+   open "/Applications/Python 3.11/Install Certificates.command"
+   ```
+
+2. **Alternative**: Update certificates via pip:
+   ```bash
+   pip3 install --upgrade certifi
+   ```
+
+3. **Manual**: If automation fails:
+   ```bash
+   /Applications/Python\ 3.11/Install\ Certificates.command
+   ```
+
+**Why this happens**: macOS Python installations don't use system certificates by default. This is a known issue that affects all HTTPS connections in Python on macOS.
+
+### SSL Certificate Errors (Other Platforms)
+**Error**: SSL-related connection errors
+
+**Solution**:
+```bash
+pip3 install --upgrade certifi
+```
+
 ### "media-user-token not found in cookies"
 - Make sure you're logged in to Apple Music web
 - Ensure you have an active subscription
@@ -103,10 +157,39 @@ Use the Search tab in OrpheusDL GUI to search Apple Music:
 - Try again later as Apple Music sometimes has delayed availability
 - Check if the track is available in your region
 
+### FFmpeg Not Found Error
+**Error**: `TypeError: expected str, bytes or os.PathLike object, not NoneType`
+
+**Solution**:
+1. Make sure FFmpeg is installed on your system
+2. Set the correct path in `config/settings.json`:
+   ```json
+   {
+     "global": {
+       "advanced": {
+         "ffmpeg_path": "/path/to/your/ffmpeg"
+       }
+     }
+   }
+   ```
+3. Or install FFmpeg to your system PATH
+
 ### Import Errors
 - Ensure the gamdl folder is in the correct location
 - Check that all gamdl dependencies are installed
 - Verify Python path includes the gamdl directory
+
+## Known Issues
+
+### macOS Specific
+- **SSL Certificates**: Must be installed before first use (see installation section)
+- **FFmpeg Path**: May need manual configuration in settings
+- **Homebrew Python**: If using Homebrew Python, certificate installation may differ
+
+### General
+- Some very new releases may not be immediately available
+- Region-locked content requires VPN or different account region
+- Large downloads may timeout and require retry
 
 ## Notes
 
@@ -114,6 +197,7 @@ Use the Search tab in OrpheusDL GUI to search Apple Music:
 - DRM-protected content requires additional setup (Widevine CDM)
 - Some content may require specific geographic regions
 - Downloads are for personal use only - respect Apple Music's terms of service
+- **macOS users must install SSL certificates before first use**
 
 ## Credits
 

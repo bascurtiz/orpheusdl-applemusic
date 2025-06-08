@@ -89,11 +89,22 @@ class Downloader:
         self._set_truncate()
         self._set_subprocess_additional_args()
 
+    def _set_subprocess_additional_args(self):
+        if self.silent:
+            self.subprocess_additional_args = {
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+            }
+        else:
+            self.subprocess_additional_args = {}
+
     def _set_binaries_path_full(self):
-        self.nm3u8dlre_path_full = shutil.which(self.nm3u8dlre_path)
-        self.ffmpeg_path_full = shutil.which(self.ffmpeg_path)
-        self.mp4box_path_full = shutil.which(self.mp4box_path)
-        self.mp4decrypt_path_full = shutil.which(self.mp4decrypt_path)
+        for binary in ("ffmpeg", "mp4box", "mp4decrypt", "nm3u8dlre"):
+            binary_path = getattr(self, f"{binary}_path")
+            if Path(binary_path).is_file():
+                setattr(self, f"{binary}_path_full", binary_path)
+            else:
+                setattr(self, f"{binary}_path_full", shutil.which(binary_path))
 
     def _set_exclude_tags_list(self):
         self.exclude_tags_list = (
@@ -105,15 +116,6 @@ class Downloader:
     def _set_truncate(self):
         if self.truncate is not None:
             self.truncate = None if self.truncate < 4 else self.truncate
-
-    def _set_subprocess_additional_args(self):
-        if self.silent:
-            self.subprocess_additional_args = {
-                "stdout": subprocess.DEVNULL,
-                "stderr": subprocess.DEVNULL,
-            }
-        else:
-            self.subprocess_additional_args = {}
 
     def set_cdm(self):
         if self.wvd_path:

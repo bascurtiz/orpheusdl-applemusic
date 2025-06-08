@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional
 import json
 import requests
 import tempfile
+import platform
 from enum import Enum
 from contextlib import contextmanager
 
@@ -249,7 +250,28 @@ class ModuleInterface:
                 self.song_codec = GamdlSongCodec.AAC_LEGACY  # Default to AAC_LEGACY
                 
         except Exception as e:
-            raise self.exception(f"Failed to initialize Apple Music API: {e}")
+            # Check for SSL certificate errors
+            if self._is_ssl_certificate_error(e):
+                if platform.system() == "Darwin":  # macOS
+                    python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+                    raise self.exception(
+                        f"SSL Certificate Error on macOS detected!\n\n"
+                        f"To fix this issue, run this command in Terminal:\n"
+                        f"open '/Applications/Python {python_version}/Install Certificates.command'\n\n"
+                        f"Or install certificates manually:\n"
+                        f"pip3 install --upgrade certifi\n\n"
+                        f"This is a known macOS issue where Python doesn't use system certificates by default.\n"
+                        f"Original error: {e}"
+                    )
+                else:
+                    raise self.exception(
+                        f"SSL Certificate Error detected!\n\n"
+                        f"Try updating certificates with:\n"
+                        f"pip3 install --upgrade certifi\n\n"
+                        f"Original error: {e}"
+                    )
+            else:
+                raise self.exception(f"Failed to initialize Apple Music API: {e}")
 
     def _set_storefront(self, country_code: Optional[str]):
         """Temporarily sets the storefront for API calls if a country code is provided."""
@@ -267,25 +289,54 @@ class ModuleInterface:
                 # gamdl's ItunesApi seems to expect lowercase for storefront
                 self.itunes_api.storefront = country_code.lower()
 
+    def _is_ssl_certificate_error(self, exception):
+        """Check if an exception is related to SSL certificate verification"""
+        error_str = str(exception).lower()
+        ssl_error_indicators = [
+            "certificate verify failed",
+            "ssl: certificate_verify_failed",
+            "unable to get local issuer certificate",
+            "certificate_verify_failed",
+            "ssl certificate problem"
+        ]
+        return any(indicator in error_str for indicator in ssl_error_indicators)
+
     def _initialize_gamdl_components(self):
         if not self.gamdl_downloader: # Check for the main Downloader instance
             try:
                 orpheus_temp_path = Path(self.settings.get("temp_path", tempfile.gettempdir()))
+                
+                # Read main OrpheusDL settings.json for binary paths
+                main_settings = {}
+                settings_file = Path("./config/settings.json")
+                if settings_file.exists():
+                    try:
+                        with open(settings_file, 'r') as f:
+                            main_settings = json.load(f)
+                    except Exception as e:
+                        if self._debug:
+                            print(f"[Apple Music Debug] Could not read main settings.json: {e}")
+                
+                # Extract binary paths from main settings, fallback to defaults
+                ffmpeg_path = main_settings.get("global", {}).get("advanced", {}).get("ffmpeg_path", "ffmpeg")
+                mp4box_path = main_settings.get("global", {}).get("advanced", {}).get("mp4box_path", "MP4Box")
+                mp4decrypt_path = main_settings.get("global", {}).get("advanced", {}).get("mp4decrypt_path", "mp4decrypt")
+                
+                if self._debug:
+                    print(f"[Apple Music Debug] Using ffmpeg_path: {ffmpeg_path}")
+                
                 self.gamdl_downloader = Downloader(
                     apple_music_api=self.apple_music_api,
                     itunes_api=self.itunes_api,
                     temp_path=orpheus_temp_path / "gamdl_temp",
                     silent=not self._debug,  # Only verbose if debug is enabled
-                    # Let other paths and settings use gamdl's defaults
+                    ffmpeg_path=ffmpeg_path,
+                    mp4box_path=mp4box_path,
+                    mp4decrypt_path=mp4decrypt_path,
                 )
                 self.gamdl_downloader.set_cdm()
-                if self._debug:
-                    print("[Apple Music Debug] gamdl.downloader.Downloader initialized and CDM set.")
             except Exception as e:
                 print(f"[Apple Music Error] Failed to initialize gamdl.downloader.Downloader: {e}")
-                if self._debug:
-                    import traceback
-                    print(traceback.format_exc())
                 self.gamdl_downloader = None
                 return # Can't proceed to DownloaderSong without gamdl_downloader
 
@@ -295,13 +346,8 @@ class ModuleInterface:
                     downloader=self.gamdl_downloader, # Pass the correctly initialized Downloader instance
                     codec=self.song_codec
                 )
-                if self._debug:
-                    print("[Apple Music Debug] gamdl.downloader_song.DownloaderSong initialized.")
             except Exception as e:
                 print(f"[Apple Music Error] Failed to initialize gamdl.downloader_song.DownloaderSong: {e}")
-                if self._debug:
-                    import traceback
-                    print(traceback.format_exc())
                 self.gamdl_downloader_song = None
 
     def custom_url_parse(self, link):
