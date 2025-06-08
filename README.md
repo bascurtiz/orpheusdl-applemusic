@@ -13,6 +13,8 @@ This module enables downloading music from Apple Music using OrpheusDL. It bridg
 
 ## Prerequisites
 
+**OrpheusDL:** [My fork](https://github.com/bascurtiz/orpheusdl) is needed to make Apple Music module work.
+
 ### 1. Apple Music Subscription
 You need an active Apple Music subscription to download content.
 
@@ -65,18 +67,35 @@ If both methods fail, run directly in Terminal:
 git clone https://github.com/bascurtiz/orpheusdl-applemusic modules/applemusic
 ```
 
-2. cd into modules/applemusic/gamdl and run:
+2. Install Apple Music module dependencies:
+Windows:
 ```bash
+cd modules\applemusic\gamdl
 pip install -r requirements.txt
+```
+macOS:
+```bash
+cd modules/applemusic/gamdl
+pip3 install -r requirements.txt
 ```
 
 3. **Place your cookies file**:<br>
 Put your `cookies.txt` file in the `/config` folder (next to settings.json)
-See ### 2. Cookies File
 
 4. Execute:
+Windows:
 ```bash
+cd..
+cd..
+cd..
 python orpheus.py
+```
+macOS:
+```bash
+cd ..
+cd ..
+cd ..
+python3 orpheus.py
 ```
 Now the config/settings.json file should be updated with the Apple Music settings.
 
@@ -91,7 +110,12 @@ The module supports standard Apple Music URLs:
 - **Artist**: `python orpheus.py https://music.apple.com/us/artist/artistname/id`
 
 ### Searching
-Use the Search tab in OrpheusDL GUI to search Apple Music:
+- **Track**: `python orpheus.py search applemusic track Never gonna give you up`
+- **Album**: `python orpheus.py search applemusic album Whenever You Need Somebody`
+- **Playlist**: `python orpheus.py search applemusic playlist Rick Astley essentials`
+- **Artist**: `python orpheus.py search applemusic artist Rick Astley`<br>
+
+Or use the Search tab in OrpheusDL GUI to search Apple Music:
 1. Select "Apple Music" as the platform
 2. Choose search type (track, album, artist, playlist)
 3. Enter your search query
