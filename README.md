@@ -47,6 +47,10 @@ python orpheus.py
 ```
 Now the config/settings.json file should be updated with the Apple Music settings.
 
+5. Make sure FFmpeg path is set in settings.json, or put it to your OS environment.
+   Instructions for macOS: https://phoenixnap.com/kb/ffmpeg-mac
+   Instructions for Win: https://phoenixnap.com/kb/ffmpeg-windows
+
 
 ## Configuration Options
 
@@ -62,10 +66,10 @@ Now the config/settings.json file should be updated with the Apple Music setting
 ### Downloading
 The module supports standard Apple Music URLs:
 
-- **Track**: `https://music.apple.com/us/song/1440857781`
-- **Album**: `https://music.apple.com/us/album/1708308989`
-- **Playlist**: `https://music.apple.com/us/playlist/todays-hits/pl.f4d106fed2bd41149aaacabb233eb5eb`
-- **Artist**: `https://music.apple.com/us/artist/taylor-swift/159260351`
+- **Track**: `python orpheus.py https://music.apple.com/us/song/omg/1810796710`
+- **Album**: `python orpheus.py https://music.apple.com/us/album/i-remember/1695965725`
+- **Playlist**: `python orpheus.py https://music.apple.com/us/playlist/inspired-by-moby/pl.16b31486360d4c828cc0d5ba9858cd3f`
+- **Artist**: `python orpheus.py https://music.apple.com/us/artist/rick-astley/669771`
 
 ### Searching
 Use the Search tab in OrpheusDL GUI to search Apple Music:
