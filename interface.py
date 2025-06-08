@@ -100,25 +100,55 @@ def _lazy_import_gamdl():
             original_popen = current_popen
     
     try:
+        print("[Apple Music Debug] Starting gamdl imports...")
+        print(f"[Apple Music Debug] Current sys.path entries with 'gamdl': {[p for p in sys.path if 'gamdl' in p]}")
+        
+        print("[Apple Music Debug] Attempting to import AppleMusicApi...")
         from gamdl.apple_music_api import AppleMusicApi
+        print("[Apple Music Debug] ✓ AppleMusicApi imported successfully")
+        
+        print("[Apple Music Debug] Attempting to import ItunesApi...")
         from gamdl.itunes_api import ItunesApi  
+        print("[Apple Music Debug] ✓ ItunesApi imported successfully")
+        
+        print("[Apple Music Debug] Attempting to import enums...")
         from gamdl.enums import SongCodec as GamdlSongCodec, RemuxMode as GamdlRemuxMode, DownloadMode as GamdlDownloadMode
+        print("[Apple Music Debug] ✓ Enums imported successfully")
+        
+        print("[Apple Music Debug] Attempting to import Downloader...")
         from gamdl.downloader import Downloader
+        print("[Apple Music Debug] ✓ Downloader imported successfully")
+        
+        print("[Apple Music Debug] Attempting to import DownloaderSong...")
         from gamdl.downloader_song import DownloaderSong
+        print("[Apple Music Debug] ✓ DownloaderSong imported successfully")
+        
+        print("[Apple Music Debug] Attempting to import LEGACY_CODECS...")
         from gamdl.constants import LEGACY_CODECS
+        print("[Apple Music Debug] ✓ LEGACY_CODECS imported successfully")
+        
+        print("[Apple Music Debug] Attempting to import DownloaderSongLegacy...")
         from gamdl.downloader_song_legacy import DownloaderSongLegacy
+        print("[Apple Music Debug] ✓ DownloaderSongLegacy imported successfully")
         
         GAMDL_AVAILABLE = True
-        # print("[Apple Music] Successfully imported gamdl core components")
+        print("[Apple Music Debug] ✓ ALL IMPORTS SUCCESSFUL!")
         return True
         
     except ImportError as e:
-        print(f"[Apple Music] Warning: Could not import gamdl components: {e}")
+        print(f"[Apple Music] ERROR: ImportError during gamdl import: {e}")
+        print(f"[Apple Music] ERROR: Failed import type: {type(e).__name__}")
+        print(f"[Apple Music] ERROR: Import error args: {e.args}")
+        import traceback
+        print("[Apple Music] ERROR: Full traceback:")
+        traceback.print_exc()
         print("[Apple Music] Module will run with limited functionality")
         return False
     except Exception as e:
-        print(f"[Apple Music] Error during gamdl import: {e}")
+        print(f"[Apple Music] ERROR: Unexpected error during gamdl import: {e}")
+        print(f"[Apple Music] ERROR: Exception type: {type(e).__name__}")
         import traceback
+        print("[Apple Music] ERROR: Full traceback:")
         traceback.print_exc()
         return False
     finally:
