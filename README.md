@@ -13,12 +13,18 @@ This module enables downloading music from Apple Music using OrpheusDL. It bridg
 
 ## Prerequisites
 
-**OrpheusDL:** [My fork](https://github.com/bascurtiz/orpheusdl) is needed to make Apple Music module work.
-
 ### 1. Apple Music Subscription
+[My fork](https://github.com/bascurtiz/orpheusdl) is needed to make Apple Music module work.
+
+### 2. Apple Music Subscription
 You need an active Apple Music subscription to download content.
 
-### 2. Cookies File
+### 3. FFmpeg
+Make sure FFmpeg path is set in settings.json, or put it to your OS environment.<br>
+- Instructions for macOS: https://phoenixnap.com/kb/ffmpeg-mac<br>
+- Instructions for Win: https://phoenixnap.com/kb/ffmpeg-windows<br>
+
+### 4. Cookies File
 You need to export your Apple Music cookies to authenticate with the service.
 
 **Steps to get cookies:**
@@ -28,11 +34,6 @@ You need to export your Apple Music cookies to authenticate with the service.
    - **Chrome/Edge**: [Get cookies.txt LOCALLY](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)
    - **Firefox**: [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/)
 Save the exported cookies as `cookies.txt` in the `/config` folder of OrpheusDL.<br>
-
-### 3. FFmpeg
-Make sure FFmpeg path is set in settings.json, or put it to your OS environment.<br>
-- Instructions for macOS: https://phoenixnap.com/kb/ffmpeg-mac<br>
-- Instructions for Win: https://phoenixnap.com/kb/ffmpeg-windows<br>
 
 ## Installation
 
@@ -45,7 +46,6 @@ Before using this module, you **must** install SSL certificates to avoid connect
    ```bash
    open "/Applications/Python 3.11/Install Certificates.command"
    ```
-3. Wait for the installation to complete
 
 #### **Alternative Method**:
 If the above doesn't work, try:
@@ -58,7 +58,8 @@ If both methods fail, run directly in Terminal:
 ```bash
 /Applications/Python\ 3.11/Install\ Certificates.command
 ```
-(Replace `3.11` with your Python version)
+(Replace `3.11` with your Python version)<br>
+
 
 ### All Platforms Setup (Windows/macOS/Linux)
 
@@ -67,13 +68,13 @@ If both methods fail, run directly in Terminal:
 git clone https://github.com/bascurtiz/orpheusdl-applemusic modules/applemusic
 ```
 
-2. Install Apple Music module dependencies:
+2. Install Apple Music module dependencies:<br>
 Windows:
 ```bash
 cd modules\applemusic\gamdl
 pip install -r requirements.txt
 ```
-macOS:
+macOS:<br>
 ```bash
 cd modules/applemusic/gamdl
 pip3 install -r requirements.txt
@@ -82,15 +83,14 @@ pip3 install -r requirements.txt
 3. **Place your cookies file**:<br>
 Put your `cookies.txt` file in the `/config` folder (next to settings.json)
 
-4. Execute:
-Windows:
+4. Windows:
 ```bash
 cd..
 cd..
 cd..
 python orpheus.py
 ```
-macOS:
+macOS:<br>
 ```bash
 cd ..
 cd ..
