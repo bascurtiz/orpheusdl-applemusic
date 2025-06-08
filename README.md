@@ -38,6 +38,7 @@ Save the exported cookies as `cookies.txt` in the `/config` folder of OrpheusDL.
 ## Installation
 
 See video tutorial (for Windows): https://www.youtube.com/watch?v=ejHePonY4e8 <br>
+See video tutorial (for macOS): https://www.youtube.com/watch?v=twrPwPjXVDw <br>
 
 ### macOS Users - Important SSL Setup!
 Before using this module, you **must** install SSL certificates to avoid connection errors:
