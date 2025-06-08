@@ -116,8 +116,15 @@ def _lazy_import_gamdl():
         print("[Apple Music Debug] ✓ Enums imported successfully")
         
         print("[Apple Music Debug] Attempting to import Downloader...")
-        from gamdl.downloader import Downloader
-        print("[Apple Music Debug] ✓ Downloader imported successfully")
+        try:
+            from gamdl.downloader import Downloader
+            print("[Apple Music Debug] ✓ Downloader imported successfully")
+        except Exception as downloader_error:
+            print(f"[Apple Music Debug] ✗ Downloader import failed: {downloader_error}")
+            print(f"[Apple Music Debug] ✗ Downloader error type: {type(downloader_error).__name__}")
+            import traceback
+            traceback.print_exc()
+            raise
         
         print("[Apple Music Debug] Attempting to import DownloaderSong...")
         from gamdl.downloader_song import DownloaderSong
