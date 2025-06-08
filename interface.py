@@ -10,11 +10,12 @@ import platform
 from enum import Enum
 from contextlib import contextmanager
 
-# Add gamdl to the path
-current_dir = Path(__file__).parent
-gamdl_path = current_dir / "gamdl"
-if str(gamdl_path) not in sys.path:
-    sys.path.insert(0, str(gamdl_path))
+# Add gamdl to the path, but only if not running as a PyInstaller bundle
+if not getattr(sys, 'frozen', False):
+    current_dir = Path(__file__).parent
+    gamdl_path = current_dir / "gamdl"
+    if str(gamdl_path) not in sys.path:
+        sys.path.insert(0, str(gamdl_path))
 
 # Initialize gamdl availability check
 GAMDL_AVAILABLE = False
@@ -51,13 +52,20 @@ def _lazy_import_gamdl():
             sys.modules[mod_name] = _mock_instance
     # --- End of Patch ---
 
-    # Ensure gamdl path is in sys.path
-    current_dir = Path(__file__).parent
-    gamdl_path = current_dir / "gamdl"
-    if str(gamdl_path) not in sys.path:
-        sys.path.insert(0, str(gamdl_path))
+    # Ensure gamdl path is in sys.path, but only if not running as a PyInstaller bundle
+    if not getattr(sys, 'frozen', False):
+        current_dir = Path(__file__).parent
+        gamdl_path = current_dir / "gamdl"
+        if str(gamdl_path) not in sys.path:
+            sys.path.insert(0, str(gamdl_path))
     
     # Debug: Check if gamdl directory exists
+    # This check is now less reliable in a frozen app, but we'll leave it for script-based debugging
+    current_dir = Path(__file__).parent if not getattr(sys, 'frozen', False) else Path(os.path.dirname(sys.executable))
+    gamdl_path = current_dir / "gamdl"
+    if getattr(sys, 'frozen', False):
+        gamdl_path = Path(os.path.dirname(sys.executable)) / "modules" / "applemusic" / "gamdl"
+
     if not gamdl_path.exists():
         print(f"[Apple Music Error] gamdl directory not found at: {gamdl_path}")
         return False
