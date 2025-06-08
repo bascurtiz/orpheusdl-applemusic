@@ -67,9 +67,9 @@ Now the config/settings.json file should be updated with the Apple Music setting
 ### Downloading
 The module supports standard Apple Music URLs:
 
-- **Track**: `python orpheus.py https://music.apple.com/us/song/omg/1810796710`
-- **Album**: `python orpheus.py https://music.apple.com/us/album/i-remember/1695965725`
-- **Playlist**: `python orpheus.py https://music.apple.com/us/playlist/inspired-by-moby/pl.16b31486360d4c828cc0d5ba9858cd3f`
+- **Track**: `python orpheus.py https://music.apple.com/us/song/never-gonna-give-you-up-2022-remaster/1612648319`
+- **Album**: `python orpheus.py https://music.apple.com/us/album/whenever-you-need-somebody-deluxe-edition-2022-remaster/1612648318`
+- **Playlist**: `python orpheus.py https://music.apple.com/us/playlist/rick-astley-essentials/pl.504a9420747e43ec93e4faa999a8bef9`
 - **Artist**: `python orpheus.py https://music.apple.com/us/artist/rick-astley/669771`
 
 ### Searching
