@@ -1115,7 +1115,7 @@ class ModuleInterface:
                 track_ids = [track['id'] for track in playlist_data['relationships']['tracks']['data']]
             
             return PlaylistInfo(
-                name=attrs.get('description', {}).get('standard', attrs.get('name', 'Unknown Playlist')),
+                name=attrs.get('name', 'Unknown Playlist'),
                 creator=attrs.get('curatorName', 'Unknown Creator'),
                 release_year=self._extract_year(attrs.get('lastModifiedDate')),
                 tracks=track_ids,
