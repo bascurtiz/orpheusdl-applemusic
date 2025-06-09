@@ -13,7 +13,7 @@ This module enables downloading music from Apple Music using OrpheusDL. It bridg
 
 ## Prerequisites
 
-### 1. Apple Music Subscription
+### 1. OrpheusDL
 [My fork](https://github.com/bascurtiz/orpheusdl) is needed to make Apple Music module work.
 
 ### 2. Apple Music Subscription
