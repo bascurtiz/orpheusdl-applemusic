@@ -45,7 +45,8 @@ Before using this module, you **must** install SSL certificates to avoid connect
 
 #### **Quick Method** (Recommended):
 1. Open Terminal
-2. Run this command (replace `3.11` with your Python version):
+2. Run this command (replace `3.11` with your Python version):<br>
+
    ```bash
    open "/Applications/Python 3.11/Install Certificates.command"
    ```
