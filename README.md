@@ -31,8 +31,8 @@ You need to export your Apple Music cookies to authenticate with the service.
 1. Log in to [Apple Music Web](https://music.apple.com) in your browser
 2. Make sure you're logged in and have an active subscription
 3. Export cookies using a browser extension like:
-   - **Chrome/Edge**: [Get cookies.txt LOCALLY](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)
-   - **Firefox**: [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/)
+   - **Chrome/Edge**: [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)
+   - **Firefox**: [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/)<br>
 Save the exported cookies as `cookies.txt` in the `/config` folder of OrpheusDL.<br>
 
 ## Installation
@@ -77,7 +77,7 @@ Windows:
 cd modules\applemusic\gamdl
 pip install -r requirements.txt
 ```
-macOS:<br>
+   macOS:<br>
 ```bash
 cd modules/applemusic/gamdl
 pip3 install -r requirements.txt
@@ -93,7 +93,7 @@ cd..
 cd..
 python orpheus.py
 ```
-macOS:<br>
+   macOS:<br>
 ```bash
 cd ..
 cd ..
