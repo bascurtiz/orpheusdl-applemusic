@@ -64,12 +64,12 @@ If both methods fail, run directly in Terminal:
 
 ### All Platforms Setup (Windows/macOS/Linux)
 
-1. Go to your orpheusdl/ directory and run:
+1. **Go to your orpheusdl/ directory and run**:
 ```bash
 git clone https://github.com/bascurtiz/orpheusdl-applemusic modules/applemusic
 ```
 
-2. Install Apple Music module dependencies:<br>
+2. **Install Apple Music module dependencies**:<br>
 
 Windows:
 ```bash
@@ -85,7 +85,7 @@ pip3 install -r requirements.txt
 3. **Place your cookies file**:<br>
 Put your `cookies.txt` file in the `/config` folder (next to settings.json)
 
-4. <br>
+4. **Run orpheus.py**:<br>
 
 Windows:
 ```bash
