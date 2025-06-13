@@ -221,6 +221,9 @@ class AppleMusicApi:
         limit: int = 25,
         offset: int = 0,
     ) -> dict:
+        # Apple Music API has a maximum limit of 50 results per request
+        if limit > 50:
+            limit = 50
 
         response = self.session.get(
             f"{self.AMP_API_URL}/v1/catalog/{self.storefront}/search",
