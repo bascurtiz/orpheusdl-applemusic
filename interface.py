@@ -167,7 +167,13 @@ module_information = ModuleInformation(
 @contextmanager
 def suppress_gamdl_debug():
     """Context manager to suppress verbose gamdl debug messages"""
-    original_stdout = sys.stdout
+    import threading
+    
+    # Use thread-local storage to avoid conflicts during concurrent downloads
+    if not hasattr(threading.current_thread(), '_original_stdout'):
+        threading.current_thread()._original_stdout = sys.stdout
+    
+    original_stdout = threading.current_thread()._original_stdout
     
     # Use devnull to completely suppress output
     devnull = open(os.devnull, 'w')
@@ -395,26 +401,41 @@ class ModuleInterface:
             media_id = query_params['i'][0]
             media_type = 'song'  # If 'i' is present, it's a song
         else:
-            # Fallback to existing path-based extraction
-            name_and_id = path_parts[2]  # e.g., 'song-name/1234567890'
-            
-            # Extract ID from the end of the URL
-            id_match = re.search(r'/(\d+)(?:\?|$)', url)
-            if not id_match:
-                # Try to get ID from the last part if no slash
-                id_match = re.search(r'(\d+)(?:\?|$)', name_and_id)
-            
-            # If no numeric ID found, check for playlist format (pl.xxxxx)
-            if not id_match:
-                pl_match = re.search(r'/(pl\.[a-f0-9]+)(?:\?|$)', url)
-                if not pl_match:
-                    pl_match = re.search(r'(pl\.[a-f0-9]+)(?:\?|$)', name_and_id)
-                if pl_match:
-                    media_id = pl_match.group(1)
+            # For URLs with format: /country/type/name/id or /country/type/name-id
+            # Check if we have 4+ parts (separate name and ID)
+            if len(path_parts) >= 4:
+                # ID is the last part
+                potential_id = path_parts[-1]
+                
+                # Check if it's a playlist ID (pl.xxxxx format)
+                if potential_id.startswith('pl.'):
+                    media_id = potential_id
+                # Check if it's a numeric ID
+                elif potential_id.isdigit():
+                    media_id = potential_id
                 else:
-                    raise ValueError("Could not extract ID from Apple Music URL")
+                    raise ValueError(f"Could not parse ID from last path part: {potential_id}")
             else:
-                media_id = id_match.group(1)
+                # Fallback to existing path-based extraction for older URL formats
+                name_and_id = path_parts[2]  # e.g., 'song-name/1234567890'
+                
+                # Extract ID from the end of the URL
+                id_match = re.search(r'/(\d+)(?:\?|$)', url)
+                if not id_match:
+                    # Try to get ID from the last part if no slash
+                    id_match = re.search(r'(\d+)(?:\?|$)', name_and_id)
+                
+                # If no numeric ID found, check for playlist format (pl.xxxxx)
+                if not id_match:
+                    pl_match = re.search(r'/(pl\.[a-f0-9]+)(?:\?|$)', url)
+                    if not pl_match:
+                        pl_match = re.search(r'(pl\.[a-f0-9]+)(?:\?|$)', name_and_id)
+                    if pl_match:
+                        media_id = pl_match.group(1)
+                    else:
+                        raise ValueError("Could not extract ID from Apple Music URL")
+                else:
+                    media_id = id_match.group(1)
         
         return {
             'type': media_type,
@@ -617,11 +638,24 @@ class ModuleInterface:
             )
 
         except Exception as e:
-            import traceback
-            print(f"[Apple Music Error] An unexpected error occurred in get_track_info for track {track_id}: {e}")
-            print(traceback.format_exc())
+            # Create a clean, concise error message
+            error_msg = str(e)
+            if "ConnectionError" in str(type(e)) or "NameResolutionError" in error_msg:
+                error_msg = "Network connection failed"
+            elif "HTTPSConnectionPool" in error_msg:
+                error_msg = "Unable to connect to Apple Music servers"
+            elif "Max retries exceeded" in error_msg:
+                error_msg = "Connection timeout"
+            elif "getaddrinfo failed" in error_msg:
+                error_msg = "DNS resolution failed"
+            
+            if self._debug:
+                import traceback
+                print(f"[Apple Music Error] An unexpected error occurred in get_track_info for track {track_id}: {e}")
+                print(traceback.format_exc())
+            
             # Return an error-state TrackInfo object
-            return TrackInfo(name=f"Error for {track_id}", error=str(e), artists=["Unknown Artist"], album="", album_id=None, artist_id=None, duration=0, codec=CodecEnum.AAC, bitrate=0, sample_rate=0, release_year=None, cover_url=None, explicit=False, tags=Tags())
+            return TrackInfo(name=f"Error for {track_id}", error=error_msg, artists=["Unknown Artist"], album="", album_id=None, artist_id=None, duration=0, codec=CodecEnum.AAC, bitrate=0, sample_rate=0, release_year=None, cover_url=None, explicit=False, tags=Tags())
 
     def get_track_download(self, track_id: str, quality_tier: QualityEnum, **kwargs) -> Optional[TrackDownloadInfo]:
         if self._debug:
@@ -629,6 +663,143 @@ class ModuleInterface:
 
         # Reset rich tagging flag for each new download
         self._using_rich_tagging = False
+        
+        # Detect context by examining the kwargs and call stack
+        import inspect
+
+        # Default to single track indentation
+        indent_spaces = "        "  # 8 spaces for single tracks
+
+        try:
+            # Check if we're in an album context by looking for album-specific indicators
+            # This is more reliable than trying to detect artist context
+
+            # Check for album context by looking for multi-track album indicators
+            is_album_context = False
+
+            # First check kwargs for album context
+            if 'extra_kwargs' in kwargs and kwargs['extra_kwargs']:
+                extra_kwargs = kwargs['extra_kwargs']
+                if 'album_id' in extra_kwargs or 'album_name' in extra_kwargs:
+                    is_album_context = True
+
+            # If not found in kwargs, check call stack for album download functions
+            if not is_album_context:
+                stack = inspect.stack()
+                for frame_info in stack:
+                    function_name = frame_info.function
+                    frame_locals = frame_info.frame.f_locals
+
+                    # Look for album download indicators, but be more specific
+                    if function_name == 'download_album':
+                        # Check if this is a multi-track album by looking for track count
+                        if 'album_info' in frame_locals:
+                            album_info = frame_locals['album_info']
+                            if self._debug:
+                                print(f"[Apple Music Debug] Found album_info: {type(album_info)}")
+                                if hasattr(album_info, '__dict__'):
+                                    print(f"[Apple Music Debug] album_info attributes: {list(album_info.__dict__.keys())}")
+                            # Only consider it an album context if it has multiple tracks
+                            # Check for tracks attribute (list of tracks)
+                            if hasattr(album_info, 'tracks') and album_info.tracks and len(album_info.tracks) > 1:
+                                is_album_context = True
+                                if self._debug:
+                                    print(f"[Apple Music Debug] Multi-track album detected: {len(album_info.tracks)} tracks")
+                                break
+                            elif hasattr(album_info, 'tracks'):
+                                if self._debug:
+                                    track_count = len(album_info.tracks) if album_info.tracks else 0
+                                    print(f"[Apple Music Debug] Single-track album detected: {track_count} tracks")
+                            # Fallback: check for track_count attribute
+                            elif hasattr(album_info, 'track_count') and album_info.track_count > 1:
+                                is_album_context = True
+                                if self._debug:
+                                    print(f"[Apple Music Debug] Multi-track album detected (track_count): {album_info.track_count} tracks")
+                                break
+                            elif hasattr(album_info, 'track_count'):
+                                if self._debug:
+                                    print(f"[Apple Music Debug] Single-track album detected (track_count): {album_info.track_count} tracks")
+                        else:
+                            # If we can't determine track count, assume it's an album
+                            is_album_context = True
+                            if self._debug:
+                                print(f"[Apple Music Debug] download_album function found, assuming album context")
+                            break
+                    elif 'album_info' in frame_locals:
+                        album_info = frame_locals['album_info']
+                        if self._debug:
+                            print(f"[Apple Music Debug] Found album_info in frame: {type(album_info)}")
+                        # Only consider it an album context if it has multiple tracks
+                        # Check for tracks attribute (list of tracks)
+                        if hasattr(album_info, 'tracks') and album_info.tracks and len(album_info.tracks) > 1:
+                            is_album_context = True
+                            if self._debug:
+                                print(f"[Apple Music Debug] Multi-track album detected in frame: {len(album_info.tracks)} tracks")
+                            break
+                        # Fallback: check for track_count attribute
+                        elif hasattr(album_info, 'track_count') and album_info.track_count > 1:
+                            is_album_context = True
+                            if self._debug:
+                                print(f"[Apple Music Debug] Multi-track album detected in frame (track_count): {album_info.track_count} tracks")
+                            break
+
+            # Determine indentation based on context
+            if self._debug:
+                print(f"[Apple Music Debug] Context detection for track {track_id}:")
+                print(f"[Apple Music Debug] is_album_context: {is_album_context}")
+
+            if is_album_context:
+                # Check if we're also in an artist context (for nested album in artist)
+                is_artist_context = False
+                stack = inspect.stack()
+                for frame_info in stack:
+                    function_name = frame_info.function
+                    frame_locals = frame_info.frame.f_locals
+
+                    if (function_name == 'download_artist' or
+                        'artist_id' in frame_locals):
+                        is_artist_context = True
+                        break
+
+                if self._debug:
+                    print(f"[Apple Music Debug] is_artist_context: {is_artist_context}")
+
+                if is_artist_context:
+                    # Album track within artist download - use 8 spaces to match OrpheusDL's indentation system
+                    indent_spaces = "        "  # 8 spaces (matches OrpheusDL track content indentation)
+                    if self._debug:
+                        print(f"[Apple Music Debug] Using 8 spaces (album within artist)")
+                else:
+                    # Regular album track - use 8 spaces to match OrpheusDL's indentation system
+                    indent_spaces = "        "  # 8 spaces (matches OrpheusDL track content indentation)
+                    if self._debug:
+                        print(f"[Apple Music Debug] Using 8 spaces (regular album)")
+            else:
+                # Check for playlist context
+                is_playlist_context = False
+                stack = inspect.stack()
+                for frame_info in stack:
+                    function_name = frame_info.function
+                    if function_name == 'download_playlist':
+                        is_playlist_context = True
+                        if self._debug:
+                            print(f"[Apple Music Debug] Detected playlist context")
+                        break
+
+                if is_playlist_context:
+                    # Playlist track - use same indentation as other track details (8 spaces)
+                    indent_spaces = "        "  # 8 spaces
+                    if self._debug:
+                        print(f"[Apple Music Debug] Using 8 spaces (playlist track)")
+                else:
+                    # Single track (standalone or within artist)
+                    indent_spaces = "        "  # 8 spaces
+                    if self._debug:
+                        print(f"[Apple Music Debug] Using 8 spaces (single track)")
+
+        except:
+            # If detection fails, use default single track indentation
+            indent_spaces = "        "  # 8 spaces
 
         if not self.is_authenticated:
             raise AuthenticationError('"cookies.txt" not found, invalid, or expired. It must be in the Netscape format. Please re-create it (e.g., with a browser extension) and place it in the /config folder.')
@@ -712,7 +883,7 @@ class ModuleInterface:
             # 4. Download the encrypted stream using gamdl's Downloader instance
             # The actual download (e.g. YTDLP) happens inside gamdl_downloader.download()
             # self.gamdl_downloader.silent is False, so yt-dlp should be verbose.
-            print(f"        Downloading encrypted stream...")
+            print(f"{indent_spaces}Downloading encrypted stream...")
             self.gamdl_downloader.download(encrypted_path, gamdl_stream_info.stream_url)
             
             # --- DEBUG LOGGING FOR ENCRYPTED FILE ---
@@ -730,7 +901,7 @@ class ModuleInterface:
             # --- END DEBUG LOGGING ---
 
             # 5. Get decryption key
-            print(f"        Getting decryption key...")
+            print(f"{indent_spaces}Getting decryption key...")
             
             # Handle legacy vs regular codec decryption and remuxing - they have different workflows
             if self.gamdl_downloader_song.codec in LEGACY_CODECS:
@@ -759,7 +930,7 @@ class ModuleInterface:
                 # Legacy remux signature: (encrypted_path, decrypted_path, remuxed_path, decryption_key)
                 # For FFMPEG mode, it uses encrypted_path and decryption_key directly
                 # For MP4BOX mode, it first decrypts to decrypted_path, then remuxes
-                print(f"        Processing with legacy remux...")
+                print(f"{indent_spaces}Processing with legacy remux...")
                 decrypted_path = self.gamdl_downloader_song.get_decrypted_path(track_id)
                 legacy_downloader_song.remux(
                     encrypted_path, decrypted_path, remuxed_path, decryption_key
@@ -774,7 +945,7 @@ class ModuleInterface:
                     
                     # Apply gamdl's rich tagging system to preserve Apple Music metadata
                     try:
-                        print(f"        Applying Apple Music metadata...")
+                        print(f"{indent_spaces}Applying Apple Music metadata...")
                         
                         # Extract rich metadata using gamdl's get_tags method
                         if self.gamdl_downloader_song.codec in LEGACY_CODECS:
@@ -819,7 +990,7 @@ class ModuleInterface:
                         if self._debug:
                             print(f"[Apple Music Metadata] Rich tagging failed: {tagging_error}")
                         # Fall back to OrpheusDL tagging
-                        print(f"        Rich tagging failed, using OrpheusDL tagging")
+                        print(f"{indent_spaces}Rich tagging failed, using OrpheusDL tagging")
                     
                     # Fallback to temp file for OrpheusDL tagging if rich tagging failed
                     return TrackDownloadInfo(
@@ -866,7 +1037,7 @@ class ModuleInterface:
                     print(f"[Apple Music Debug] Decrypted file will be at: {decrypted_path}")
 
                 # 7. Decrypt the file using gamdl's DownloaderSong instance
-                print(f"        Decrypting file...")
+                print(f"{indent_spaces}Decrypting file...")
                 self.gamdl_downloader_song.decrypt(encrypted_path, decrypted_path, decryption_key)
                 if self._debug:
                     print(f"[Apple Music Debug] Decryption call completed.")
@@ -876,7 +1047,7 @@ class ModuleInterface:
                 if self._debug:
                     print(f"[Apple Music Debug] Remuxed file will be at: {remuxed_path}")
                     print(f"[Apple Music Debug] Using regular remux method for {self.gamdl_downloader_song.codec.name}")
-                print(f"        Remuxing audio file...")
+                print(f"{indent_spaces}Remuxing audio file...")
                 self.gamdl_downloader_song.remux(decrypted_path, remuxed_path, gamdl_stream_info.codec)
                 if self._debug:
                     print(f"[Apple Music Debug] Remux call completed.")
@@ -888,7 +1059,7 @@ class ModuleInterface:
                     
                     # Apply gamdl's rich tagging system to preserve Apple Music metadata
                     try:
-                        print(f"        Applying Apple Music metadata...")
+                        print(f"{indent_spaces}Applying Apple Music metadata...")
                         
                         # Extract rich metadata using gamdl's get_tags method
                         if self.gamdl_downloader_song.codec in LEGACY_CODECS:
@@ -933,7 +1104,7 @@ class ModuleInterface:
                         if self._debug:
                             print(f"[Apple Music Metadata] Rich tagging failed: {tagging_error}")
                         # Fall back to OrpheusDL tagging
-                        print(f"        Rich tagging failed, using OrpheusDL tagging")
+                        print(f"{indent_spaces}Rich tagging failed, using OrpheusDL tagging")
                     
                     # Fallback to temp file for OrpheusDL tagging if rich tagging failed
                     return TrackDownloadInfo(
@@ -946,7 +1117,7 @@ class ModuleInterface:
                         print(f"[Apple Music Warning] Remuxed file {remuxed_path} is too small ({file_size} bytes) or missing after legacy remux attempt.")
                     
                     # For legacy codecs, manually decrypt as fallback since legacy remux failed
-                    print(f"        Remux failed, trying manual decryption fallback...")
+                    print(f"{indent_spaces}Remux failed, trying manual decryption fallback...")
                     
                     # Check if encrypted file is still valid
                     if encrypted_path.exists() and encrypted_path.stat().st_size > 1048576:
@@ -1035,14 +1206,18 @@ class ModuleInterface:
             error_str = str(e)
             # Check for specific "song unavailable" error from Apple Music
             if '"failureType":"3076"' in error_str:
-                customer_message = "This song is currently unavailable." # Default message
+                customer_message = "This song is unavailable." # Default message
                 try:
                     # Attempt to parse the JSON part of the error string for a better message
                     json_str = error_str[error_str.find('{'):error_str.rfind('}')+1]
                     error_json = json.loads(json_str)
                     message_from_api = error_json.get('customerMessage') or error_json.get('dialog', {}).get('message')
                     if message_from_api:
-                        customer_message = message_from_api
+                        # Replace Apple's message with our shorter version
+                        if "currently unavailable" in message_from_api.lower():
+                            customer_message = "This song is unavailable."
+                        else:
+                            customer_message = message_from_api
                 except (json.JSONDecodeError, KeyError, IndexError):
                     pass # Fallback to default message if parsing fails
                 raise TrackUnavailableError(customer_message) from e
@@ -1050,11 +1225,22 @@ class ModuleInterface:
             if '"failureType":"2002"' in error_str or "Your session has ended" in error_str:
                 raise DownloadError('"cookies.txt" not found, invalid, or expired. It must be in the Netscape format. Please re-create it (e.g., with a browser extension) and place it in the /config folder.')
             
+            # Create a clean, concise error message
+            error_msg = str(e)
+            if "ConnectionError" in str(type(e)) or "NameResolutionError" in error_msg:
+                error_msg = "Network connection failed"
+            elif "HTTPSConnectionPool" in error_msg:
+                error_msg = "Unable to connect to Apple Music servers"
+            elif "Max retries exceeded" in error_msg:
+                error_msg = "Connection timeout"
+            elif "getaddrinfo failed" in error_msg:
+                error_msg = "DNS resolution failed"
+            
             if self._debug:
                 import traceback
                 print(f"[Apple Music Error] An unexpected error occurred in get_track_download for track {track_id}: {e}")
                 print(traceback.format_exc())
-            raise DownloadError(f"Apple Music: Unexpected error during download of track {track_id} - {type(e).__name__}: {e}")
+            raise DownloadError(f"Apple Music: Unexpected error during download of track {track_id} - {error_msg}")
 
     def get_album_info(self, album_id: str, **kwargs) -> Optional[AlbumInfo]:
         """Get album information"""
