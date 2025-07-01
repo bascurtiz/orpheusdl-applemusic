@@ -802,7 +802,7 @@ class ModuleInterface:
             indent_spaces = "        "  # 8 spaces
 
         if not self.is_authenticated:
-            raise AuthenticationError('"cookies.txt" not found, invalid, or expired. It must be in the Netscape format. Please re-create it (e.g., with a browser extension) and place it in the /config folder.')
+            raise AuthenticationError('"cookies.txt" not found, invalid, or expired.')
 
         # Ensure gamdl components are initialized (downloader and downloader_song)
         if not self.gamdl_downloader_song or not self.gamdl_downloader:
@@ -1223,7 +1223,7 @@ class ModuleInterface:
                 raise TrackUnavailableError(customer_message) from e
 
             if '"failureType":"2002"' in error_str or "Your session has ended" in error_str:
-                raise DownloadError('"cookies.txt" not found, invalid, or expired. It must be in the Netscape format. Please re-create it (e.g., with a browser extension) and place it in the /config folder.')
+                raise DownloadError('"cookies.txt" not found, invalid, or expired.')
             
             # Create a clean, concise error message
             error_msg = str(e)
