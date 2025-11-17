@@ -70,14 +70,40 @@ class AppleMusicApi:
             }
         )
         home_page = self.session.get(self.APPLE_MUSIC_HOMEPAGE_URL).text
-        index_js_uri = re.search(
-            r"/(assets/index-legacy-[^/]+\.js)",
+        index_js_uri = None
+
+        # Prefer the explicit Vite legacy entry when available (current site layout).
+        legacy_entry_match = re.search(
+            r'id="vite-legacy-entry"\s+data-src="([^"]+)"',
             home_page,
-        ).group(1)
+        )
+        if legacy_entry_match:
+            index_js_uri = legacy_entry_match.group(1).lstrip("/")
+
+        # Fall back to the previous asset naming scheme for backwards compatibility.
+        if not index_js_uri:
+            legacy_match = re.search(
+                r"/(assets/index-legacy-[^/]+\.js)",
+                home_page,
+            )
+            if legacy_match:
+                index_js_uri = legacy_match.group(1)
+
+        if not index_js_uri:
+            raise RuntimeError(
+                "Unable to locate Apple Music legacy bootstrap script. "
+                "Check if the homepage markup has changed."
+            )
+
         index_js_page = self.session.get(
             f"{self.APPLE_MUSIC_HOMEPAGE_URL}/{index_js_uri}"
         ).text
-        token = re.search('(?=eyJh)(.*?)(?=")', index_js_page).group(1)
+        token_match = re.search(r'(?=eyJh)(.*?)(?=")', index_js_page)
+        if not token_match:
+            raise RuntimeError(
+                "Failed to extract AMP Bearer token from Apple Music legacy script."
+            )
+        token = token_match.group(1)
         self.session.headers.update({"authorization": f"Bearer {token}"})
         self.session.params = {"l": self.language}
         self._set_storefront()
