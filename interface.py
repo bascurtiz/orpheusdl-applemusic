@@ -327,6 +327,46 @@ class ModuleInterface:
                 mp4box_path = main_settings.get("global", {}).get("advanced", {}).get("mp4box_path", "MP4Box")
                 mp4decrypt_path = main_settings.get("global", {}).get("advanced", {}).get("mp4decrypt_path", "mp4decrypt")
                 
+                # Resolve FFmpeg path if it's the default "ffmpeg" and not found in PATH
+                if ffmpeg_path == "ffmpeg" and not shutil.which("ffmpeg"):
+                    # Search for ffmpeg in app directories (similar to gui.py logic)
+                    ffmpeg_name = "ffmpeg"
+                    if platform.system() == "Windows":
+                        ffmpeg_name = "ffmpeg.exe"
+                        
+                    search_paths = []
+                    
+                    # 1. Check relative to executable (frozen app)
+                    if getattr(sys, 'frozen', False):
+                        app_dir = os.path.dirname(sys.executable)
+                        search_paths.append(os.path.join(app_dir, ffmpeg_name))
+                        
+                        # macOS Bundle logic
+                        if platform.system() == "Darwin" and ".app/Contents/MacOS" in sys.executable:
+                            # Look in the folder containing the .app (where user likely put ffmpeg)
+                            bundle_dir = os.path.dirname(os.path.dirname(os.path.dirname(sys.executable)))
+                            search_paths.append(os.path.join(bundle_dir, ffmpeg_name))
+                    
+                    # 2. Check CWD
+                    search_paths.append(os.path.join(os.getcwd(), ffmpeg_name))
+                    
+                    for path in search_paths:
+                        if os.path.isfile(path):
+                            if self._debug:
+                                print(f"[Apple Music Debug] Found local FFmpeg at: {path}")
+                            
+                            # Ensure executable permissions
+                            if not os.access(path, os.X_OK):
+                                try:
+                                    if self._debug:
+                                        print(f"[Apple Music Debug] Setting executable permissions for {path}")
+                                    os.chmod(path, 0o755)
+                                except Exception as e:
+                                    print(f"[Apple Music Warning] Failed to set executable permissions for {path}: {e}")
+                            
+                            ffmpeg_path = path
+                            break
+
                 if self._debug:
                     print(f"[Apple Music Debug] Using ffmpeg_path: {ffmpeg_path}")
                 
