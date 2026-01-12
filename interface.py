@@ -344,8 +344,19 @@ class ModuleInterface:
                         # macOS Bundle logic
                         if platform.system() == "Darwin" and ".app/Contents/MacOS" in sys.executable:
                             # Look in the folder containing the .app (where user likely put ffmpeg)
+                            # sys.executable = .../OrpheusDL.app/Contents/MacOS/OrpheusDL
+                            # dirname(sys.executable) = .../OrpheusDL.app/Contents/MacOS
+                            # dirname(...) = .../OrpheusDL.app/Contents
+                            # dirname(...) = .../OrpheusDL.app
+                            # dirname(...) = /Applications (or wherever installed)
                             bundle_dir = os.path.dirname(os.path.dirname(os.path.dirname(sys.executable)))
-                            search_paths.append(os.path.join(bundle_dir, ffmpeg_name))
+                            parent_dir = os.path.dirname(bundle_dir)
+                            search_paths.append(os.path.join(bundle_dir, ffmpeg_name)) # Check inside .app root (unlikely but possible)
+                            search_paths.append(os.path.join(parent_dir, ffmpeg_name)) # Check next to .app (most likely)
+                            
+                            # Check Application Support directory (standard data location)
+                            app_support = os.path.expanduser("~/Library/Application Support/OrpheusDL GUI")
+                            search_paths.append(os.path.join(app_support, ffmpeg_name))
                     
                     # 2. Check CWD
                     search_paths.append(os.path.join(os.getcwd(), ffmpeg_name))
