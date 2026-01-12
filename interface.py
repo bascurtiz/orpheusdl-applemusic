@@ -7,6 +7,7 @@ import json
 import requests
 import tempfile
 import platform
+import shutil
 from enum import Enum
 from contextlib import contextmanager
 
