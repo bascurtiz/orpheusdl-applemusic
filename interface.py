@@ -308,7 +308,9 @@ class ModuleInterface:
         return any(indicator in error_str for indicator in ssl_error_indicators)
 
     def _initialize_gamdl_components(self):
+        print(f"[Apple Music] _initialize_gamdl_components CALLED. gamdl_downloader exists: {self.gamdl_downloader is not None}")
         if not self.gamdl_downloader: # Check for the main Downloader instance
+            print("[Apple Music] Initializing gamdl_downloader...")
             try:
                 orpheus_temp_path = Path(self.settings.get("temp_path", tempfile.gettempdir()))
                 
