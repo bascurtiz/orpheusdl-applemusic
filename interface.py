@@ -337,7 +337,12 @@ class ModuleInterface:
                     # Search paths for local binaries
                     search_paths = []
                     
-                    # 1. Check relative to executable (frozen app)
+                    # 1. Always check Application Support on macOS first (most common user location)
+                    if platform.system() == "Darwin":
+                        app_support = os.path.expanduser("~/Library/Application Support/OrpheusDL GUI")
+                        search_paths.append(os.path.join(app_support, binary_name))
+                    
+                    # 2. Check relative to executable (frozen app)
                     if getattr(sys, 'frozen', False):
                         app_dir = os.path.dirname(sys.executable)
                         search_paths.append(os.path.join(app_dir, binary_name))
@@ -348,12 +353,8 @@ class ModuleInterface:
                             parent_dir = os.path.dirname(bundle_dir)
                             search_paths.append(os.path.join(bundle_dir, binary_name)) 
                             search_paths.append(os.path.join(parent_dir, binary_name))
-                            
-                            # Check Application Support directory
-                            app_support = os.path.expanduser("~/Library/Application Support/OrpheusDL GUI")
-                            search_paths.append(os.path.join(app_support, binary_name))
 
-                    # 2. Check CWD
+                    # 3. Check CWD
                     search_paths.append(os.path.join(os.getcwd(), binary_name))
 
                     # Check all search paths
