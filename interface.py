@@ -1,4 +1,5 @@
 import os
+print("[Apple Music Interface] *** MODULE LOADED - BUILD DATE: 2026-01-13 16:45 ***")
 import re
 import sys
 from pathlib import Path
