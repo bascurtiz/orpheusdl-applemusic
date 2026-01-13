@@ -1351,8 +1351,12 @@ class ModuleInterface:
             elif "getaddrinfo failed" in error_msg:
                 error_msg = "DNS resolution failed"
             
+            # Always log to debug file regardless of debug mode
+            import traceback
+            _debug_log(f"EXCEPTION in get_track_download: {type(e).__name__}: {e}")
+            _debug_log(f"TRACEBACK:\n{traceback.format_exc()}")
+            
             if self._debug:
-                import traceback
                 print(f"[Apple Music Error] An unexpected error occurred in get_track_download for track {track_id}: {e}")
                 print(traceback.format_exc())
             raise DownloadError(f"Apple Music: Unexpected error during download of track {track_id} - {error_msg}")
