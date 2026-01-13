@@ -328,44 +328,39 @@ class ModuleInterface:
                 mp4box_path = main_settings.get("global", {}).get("advanced", {}).get("mp4box_path", "MP4Box")
                 mp4decrypt_path = main_settings.get("global", {}).get("advanced", {}).get("mp4decrypt_path", "mp4decrypt")
                 
-                # Resolve FFmpeg path if it's the default "ffmpeg" and not found in PATH
-                if ffmpeg_path == "ffmpeg" and not shutil.which("ffmpeg"):
-                    # Search for ffmpeg in app directories (similar to gui.py logic)
-                    ffmpeg_name = "ffmpeg"
-                    if platform.system() == "Windows":
-                        ffmpeg_name = "ffmpeg.exe"
-                        
+                # Helper to find and fix binaries
+                def resolve_binary_path(binary_name, default_path):
+                    # If the user specified a custom path (not the default name), verify it exists
+                    if default_path != binary_name:
+                        return default_path
+
+                    # Search paths for local binaries
                     search_paths = []
                     
                     # 1. Check relative to executable (frozen app)
                     if getattr(sys, 'frozen', False):
                         app_dir = os.path.dirname(sys.executable)
-                        search_paths.append(os.path.join(app_dir, ffmpeg_name))
+                        search_paths.append(os.path.join(app_dir, binary_name))
                         
                         # macOS Bundle logic
                         if platform.system() == "Darwin" and ".app/Contents/MacOS" in sys.executable:
-                            # Look in the folder containing the .app (where user likely put ffmpeg)
-                            # sys.executable = .../OrpheusDL.app/Contents/MacOS/OrpheusDL
-                            # dirname(sys.executable) = .../OrpheusDL.app/Contents/MacOS
-                            # dirname(...) = .../OrpheusDL.app/Contents
-                            # dirname(...) = .../OrpheusDL.app
-                            # dirname(...) = /Applications (or wherever installed)
                             bundle_dir = os.path.dirname(os.path.dirname(os.path.dirname(sys.executable)))
                             parent_dir = os.path.dirname(bundle_dir)
-                            search_paths.append(os.path.join(bundle_dir, ffmpeg_name)) # Check inside .app root (unlikely but possible)
-                            search_paths.append(os.path.join(parent_dir, ffmpeg_name)) # Check next to .app (most likely)
+                            search_paths.append(os.path.join(bundle_dir, binary_name)) 
+                            search_paths.append(os.path.join(parent_dir, binary_name))
                             
-                            # Check Application Support directory (standard data location)
+                            # Check Application Support directory
                             app_support = os.path.expanduser("~/Library/Application Support/OrpheusDL GUI")
-                            search_paths.append(os.path.join(app_support, ffmpeg_name))
-                    
+                            search_paths.append(os.path.join(app_support, binary_name))
+
                     # 2. Check CWD
-                    search_paths.append(os.path.join(os.getcwd(), ffmpeg_name))
-                    
+                    search_paths.append(os.path.join(os.getcwd(), binary_name))
+
+                    # Check all search paths
                     for path in search_paths:
                         if os.path.isfile(path):
                             if self._debug:
-                                print(f"[Apple Music Debug] Found local FFmpeg at: {path}")
+                                print(f"[Apple Music Debug] Found local {binary_name} at: {path}")
                             
                             # Ensure executable permissions
                             if not os.access(path, os.X_OK):
@@ -376,11 +371,28 @@ class ModuleInterface:
                                 except Exception as e:
                                     print(f"[Apple Music Warning] Failed to set executable permissions for {path}: {e}")
                             
-                            ffmpeg_path = path
-                            break
+                            return path
+                    
+                    # Fallback to system PATH (shutil.which)
+                    system_path = shutil.which(binary_name)
+                    if system_path:
+                        if self._debug:
+                            print(f"[Apple Music Debug] Found system {binary_name} at: {system_path}")
+                        return system_path
+                        
+                    return binary_name
+
+                # Resolve all binaries
+                ffmpeg_name = "ffmpeg.exe" if platform.system() == "Windows" else "ffmpeg"
+                mp4box_name = "mp4box.exe" if platform.system() == "Windows" else "MP4Box"
+                mp4decrypt_name = "mp4decrypt.exe" if platform.system() == "Windows" else "mp4decrypt"
+
+                ffmpeg_path = resolve_binary_path(ffmpeg_name, ffmpeg_path)
+                mp4box_path = resolve_binary_path(mp4box_name, mp4box_path)
+                mp4decrypt_path = resolve_binary_path(mp4decrypt_name, mp4decrypt_path)
 
                 if self._debug:
-                    print(f"[Apple Music Debug] Using ffmpeg_path: {ffmpeg_path}")
+                    print(f"[Apple Music Debug] Final paths - ffmpeg: {ffmpeg_path}, mp4box: {mp4box_path}, mp4decrypt: {mp4decrypt_path}")
                 
                 self.gamdl_downloader = Downloader(
                     apple_music_api=self.apple_music_api,
