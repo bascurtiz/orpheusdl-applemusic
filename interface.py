@@ -23,6 +23,78 @@ import platform
 import shutil
 from enum import Enum
 from contextlib import contextmanager
+import ssl
+import urllib.request
+
+# ============================================================================
+# SSL Certificate Workaround for Bundled macOS Apps
+# ============================================================================
+# On macOS, bundled Python apps often can't verify SSL certificates because
+# they don't have access to the system's certificate store. This workaround
+# creates a custom SSL context that either:
+# 1. Uses certifi's CA bundle (if available)
+# 2. Falls back to an unverified context (less secure but functional)
+# ============================================================================
+
+def _setup_ssl_workaround():
+    """
+    Set up SSL certificate handling for bundled macOS apps.
+    This patches urllib to use a working SSL context.
+    """
+    if platform.system() != "Darwin":
+        return  # Only needed on macOS
+    
+    ssl_context = None
+    
+    # Try multiple approaches to get a working SSL context
+    # Approach 1: Use certifi's CA bundle (most secure)
+    try:
+        import certifi
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        # Test if it works by trying to get the CA certs
+        if ssl_context.get_ca_certs():
+            _debug_log(f"SSL: Using certifi CA bundle at {certifi.where()}")
+        else:
+            ssl_context = None  # Didn't work, try next approach
+            _debug_log("SSL: certifi available but no CA certs loaded")
+    except Exception as e:
+        _debug_log(f"SSL: certifi approach failed: {e}")
+    
+    # Approach 2: Try system certificates
+    if ssl_context is None:
+        try:
+            ssl_context = ssl.create_default_context()
+            _debug_log("SSL: Using system SSL context")
+        except Exception as e:
+            _debug_log(f"SSL: System SSL context failed: {e}")
+    
+    # Approach 3: Last resort - unverified context (less secure but functional)
+    if ssl_context is None:
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        _debug_log("SSL: WARNING - Using unverified SSL context (certificates not verified)")
+    
+    # Create an HTTPS handler with our SSL context
+    https_handler = urllib.request.HTTPSHandler(context=ssl_context)
+    
+    # Install a custom opener that uses our SSL context
+    opener = urllib.request.build_opener(https_handler)
+    urllib.request.install_opener(opener)
+    
+    _debug_log("SSL: Installed custom urllib opener with SSL workaround")
+    
+    # Also store the context globally for other libraries that might need it
+    global _APPLE_MUSIC_SSL_CONTEXT
+    _APPLE_MUSIC_SSL_CONTEXT = ssl_context
+
+# Global SSL context for use by other parts of the module
+_APPLE_MUSIC_SSL_CONTEXT = None
+
+# Apply SSL workaround on module load for bundled apps
+if getattr(sys, 'frozen', False) and platform.system() == "Darwin":
+    _debug_log("SSL: Detected bundled macOS app, applying SSL workaround...")
+    _setup_ssl_workaround()
 
 # Add gamdl to the path
 current_dir = Path(__file__).parent
