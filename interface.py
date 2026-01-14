@@ -87,6 +87,36 @@ def _setup_ssl_workaround():
     # Also store the context globally for other libraries that might need it
     global _APPLE_MUSIC_SSL_CONTEXT
     _APPLE_MUSIC_SSL_CONTEXT = ssl_context
+    
+    # =========================================================================
+    # CRITICAL: Patch ssl._create_default_https_context
+    # =========================================================================
+    # Some libraries (like m3u8) may bypass the opener and use urllib.urlopen()
+    # directly with an implicit SSL context. By patching the default context
+    # factory function, we ensure ALL SSL operations use our working context.
+    # This is the same technique Python/pip uses when SSL verification fails.
+    # =========================================================================
+    
+    def _create_patched_ssl_context(purpose=ssl.Purpose.SERVER_AUTH, *, cafile=None, capath=None, cadata=None):
+        """Create an SSL context using certifi or fallback to unverified."""
+        try:
+            import certifi
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.verify_mode = ssl.CERT_REQUIRED
+            ctx.check_hostname = True
+            ctx.load_verify_locations(certifi.where())
+            _debug_log("SSL: _create_default_https_context using certifi")
+            return ctx
+        except Exception as e:
+            _debug_log(f"SSL: _create_default_https_context fallback to unverified: {e}")
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return ctx
+    
+    # Patch the default HTTPS context creation
+    ssl._create_default_https_context = _create_patched_ssl_context
+    _debug_log("SSL: Patched ssl._create_default_https_context")
 
 # Global SSL context for use by other parts of the module
 _APPLE_MUSIC_SSL_CONTEXT = None
