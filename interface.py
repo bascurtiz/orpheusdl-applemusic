@@ -98,25 +98,19 @@ def _setup_ssl_workaround():
     # =========================================================================
     
     def _create_patched_ssl_context(purpose=ssl.Purpose.SERVER_AUTH, *, cafile=None, capath=None, cadata=None):
-        """Create an SSL context using certifi or fallback to unverified."""
-        try:
-            import certifi
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            ctx.verify_mode = ssl.CERT_REQUIRED
-            ctx.check_hostname = True
-            ctx.load_verify_locations(certifi.where())
-            _debug_log("SSL: _create_default_https_context using certifi")
-            return ctx
-        except Exception as e:
-            _debug_log(f"SSL: _create_default_https_context fallback to unverified: {e}")
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            return ctx
+        """Create an SSL context - use unverified for bundled apps since certifi doesn't work."""
+        # For bundled macOS apps, SSL verification with certifi doesn't work
+        # Apple's certificate chain isn't properly validated even with certifi
+        # Use unverified context as the only reliable solution
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        _debug_log("SSL: _create_default_https_context using UNVERIFIED context (bundled app workaround)")
+        return ctx
     
     # Patch the default HTTPS context creation
     ssl._create_default_https_context = _create_patched_ssl_context
-    _debug_log("SSL: Patched ssl._create_default_https_context")
+    _debug_log("SSL: Patched ssl._create_default_https_context to use unverified context")
 
 # Global SSL context for use by other parts of the module
 _APPLE_MUSIC_SSL_CONTEXT = None
