@@ -1,5 +1,19 @@
 import os
-print("[Apple Music Interface] *** MODULE LOADED - BUILD DATE: 2026-01-13 18:15 ***")
+import sys
+import ssl
+
+# ============================================================================
+# CRITICAL: SSL Certificate Fix for Bundled macOS Apps
+# ============================================================================
+# This MUST be at the very top, before any library that uses SSL is imported.
+# On macOS, bundled Python apps can't verify SSL certificates. We use Python's
+# built-in ssl._create_unverified_context as the default for HTTPS connections.
+# ============================================================================
+if getattr(sys, 'frozen', False) and sys.platform == 'darwin':
+    # Use Python's built-in unverified context - the standard workaround
+    ssl._create_default_https_context = ssl._create_unverified_context
+
+print("[Apple Music Interface] *** MODULE LOADED - BUILD DATE: 2026-01-14 02:07 ***")
 
 # Debug logging to file (bypasses stdout capture)
 _DEBUG_LOG_PATH = os.path.expanduser("~/applemusic_debug.log")
@@ -10,6 +24,10 @@ def _debug_log(msg):
             f.flush()
     except:
         pass
+
+if getattr(sys, 'frozen', False) and sys.platform == 'darwin':
+    _debug_log("SSL: Applied ssl._create_unverified_context at module top (before imports)")
+
 _debug_log("=== Apple Music module loaded ===")
 
 import re
