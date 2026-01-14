@@ -310,10 +310,10 @@ class ModuleInterface:
         return any(indicator in error_str for indicator in ssl_error_indicators)
 
     def _initialize_gamdl_components(self):
-        _debug_log("_initialize_gamdl_components CALLED")
+
         print(f"[Apple Music] _initialize_gamdl_components CALLED. gamdl_downloader exists: {self.gamdl_downloader is not None}")
         if not self.gamdl_downloader: # Check for the main Downloader instance
-            _debug_log("Initializing gamdl_downloader...")
+
             print("[Apple Music] Initializing gamdl_downloader...")
             try:
                 orpheus_temp_path = Path(self.settings.get("temp_path", tempfile.gettempdir()))
@@ -386,20 +386,20 @@ class ModuleInterface:
                                 except Exception as e:
                                     print(f"[Apple Music Warning] Failed to set executable permissions for {path}: {e}")
                             
-                            _debug_log(f"FOUND {binary_name} at: {path}")
+
                             print(f"[Apple Music] FOUND {binary_name} at: {path}")
                             return path
                     
                     # Fallback to system PATH (shutil.which)
-                    _debug_log(f"Not found locally, trying shutil.which({binary_name})...")
+
                     print(f"[Apple Music] Not found locally, trying shutil.which({binary_name})...")
                     system_path = shutil.which(binary_name)
                     if system_path:
-                        _debug_log(f"Found system {binary_name} at: {system_path}")
+
                         print(f"[Apple Music] Found system {binary_name} at: {system_path}")
                         return system_path
                     
-                    _debug_log(f"WARNING: {binary_name} NOT FOUND anywhere!")
+
                     print(f"[Apple Music] WARNING: {binary_name} NOT FOUND anywhere!")
                     return binary_name
 
@@ -408,14 +408,12 @@ class ModuleInterface:
                 mp4box_name = "mp4box.exe" if platform.system() == "Windows" else "MP4Box"
                 mp4decrypt_name = "mp4decrypt.exe" if platform.system() == "Windows" else "mp4decrypt"
 
-                _debug_log(f"About to resolve binaries: ffmpeg={ffmpeg_path}, mp4box={mp4box_path}, mp4decrypt={mp4decrypt_path}")
+
                 ffmpeg_path = resolve_binary_path(ffmpeg_name, ffmpeg_path)
                 mp4box_path = resolve_binary_path(mp4box_name, mp4box_path)
                 mp4decrypt_path = resolve_binary_path(mp4decrypt_name, mp4decrypt_path)
 
-                _debug_log(f"Resolved paths: ffmpeg={ffmpeg_path}")
-                _debug_log(f"Resolved paths: mp4box={mp4box_path}")
-                _debug_log(f"Resolved paths: mp4decrypt={mp4decrypt_path}")
+
                 print(f"[Apple Music] Final resolved paths:")
                 print(f"[Apple Music]   ffmpeg: {ffmpeg_path}")
                 print(f"[Apple Music]   mp4box: {mp4box_path}")
@@ -431,12 +429,10 @@ class ModuleInterface:
                     mp4decrypt_path=mp4decrypt_path,
                 )
                 # Log what the Downloader actually has for paths
-                _debug_log(f"Downloader created. ffmpeg_path_full={self.gamdl_downloader.ffmpeg_path_full}")
-                _debug_log(f"Downloader created. mp4box_path_full={self.gamdl_downloader.mp4box_path_full}")
-                _debug_log(f"Downloader created. mp4decrypt_path_full={self.gamdl_downloader.mp4decrypt_path_full}")
+
                 self.gamdl_downloader.set_cdm()
             except Exception as e:
-                _debug_log(f"Failed to initialize Downloader: {e}")
+
                 print(f"[Apple Music Error] Failed to initialize gamdl.downloader.Downloader: {e}")
                 self.gamdl_downloader = None
                 return # Can't proceed to DownloaderSong without gamdl_downloader
@@ -897,23 +893,23 @@ class ModuleInterface:
             # If detection fails, use default single track indentation
             indent_spaces = "        "  # 8 spaces
 
-        _debug_log(f"get_track_download: is_authenticated={self.is_authenticated}")
+
         print(f"[Apple Music] Authentication check: is_authenticated={self.is_authenticated}")
         if not self.is_authenticated:
-            _debug_log("Authentication failed!")
+
             raise AuthenticationError('"cookies.txt" not found, invalid, or expired.')
 
         # Ensure gamdl components are initialized (downloader and downloader_song)
-        _debug_log(f"Checking gamdl: song={self.gamdl_downloader_song is not None}, dl={self.gamdl_downloader is not None}")
+
         print(f"[Apple Music] Checking gamdl components: downloader_song={self.gamdl_downloader_song is not None}, downloader={self.gamdl_downloader is not None}")
         if not self.gamdl_downloader_song or not self.gamdl_downloader:
-            _debug_log("Calling _initialize_gamdl_components...")
+
             print("[Apple Music] gamdl components not initialized, calling _initialize_gamdl_components...")
             self._initialize_gamdl_components() # This method should set up self.gamdl_downloader and self.gamdl_downloader_song
-            _debug_log(f"After init: song={self.gamdl_downloader_song is not None}, dl={self.gamdl_downloader is not None}")
+
             print(f"[Apple Music] After init: downloader_song={self.gamdl_downloader_song is not None}, downloader={self.gamdl_downloader is not None}")
             if not self.gamdl_downloader_song or not self.gamdl_downloader:
-                _debug_log("gamdl components failed to initialize!")
+
                 print("[Apple Music Error] gamdl components failed to initialize.")
                 raise DownloadError("Apple Music: gamdl components could not be initialized for download.")
         
@@ -1340,10 +1336,7 @@ class ModuleInterface:
             elif "getaddrinfo failed" in error_msg:
                 error_msg = "DNS resolution failed"
             
-            # Always log to debug file regardless of debug mode
             import traceback
-            _debug_log(f"EXCEPTION in get_track_download: {type(e).__name__}: {e}")
-            _debug_log(f"TRACEBACK:\n{traceback.format_exc()}")
             
             if self._debug:
                 print(f"[Apple Music Error] An unexpected error occurred in get_track_download for track {track_id}: {e}")
