@@ -598,9 +598,55 @@ class ModuleInterface:
         except (ValueError, IndexError):
             return None
 
+    def _check_and_reload_cookies(self):
+        """
+        Checks if cookies.txt exists and reloads the session if needed.
+        This allows the user to add cookies.txt while the app is running.
+        """
+        # Get configured path
+        cookies_path_str = self.settings.get('cookies_path', './config/cookies.txt')
+        cookies_path = Path(cookies_path_str) if cookies_path_str else None
+        
+        # If configured path doesn't exist, try default
+        if not cookies_path or not cookies_path.exists():
+            default_cookies = Path('./config/cookies.txt')
+            if default_cookies.exists():
+                cookies_path = default_cookies
+        
+        # If we found a cookies file
+        if cookies_path and cookies_path.exists():
+            # If we weren't authenticated before, or if we just want to be sure,
+            # we can tell the API to update its session.
+            # We only do this if the API is initialized.
+            if self.apple_music_api:
+                # Update the path in the API instance
+                self.apple_music_api.cookies_path = cookies_path
+                
+                # Reload session (this loads cookies from the file)
+                try:
+                    if self._debug:
+                        print(f"[Apple Music Debug] Reloading cookies from {cookies_path}...")
+                    self.apple_music_api._set_session()
+                    
+                    # Check if we are now authenticated
+                    if self.apple_music_api.session.headers.get('Media-User-Token'):
+                        if not self.is_authenticated:
+                            self.is_authenticated = True
+                            if self._debug:
+                                print("[Apple Music Debug] Successfully authenticated after reloading cookies.")
+                    else:
+                        if self._debug:
+                            print("[Apple Music Warning] Reloaded cookies but Media-User-Token still missing.")
+                except Exception as e:
+                    if self._debug:
+                        print(f"[Apple Music Error] Failed to reload cookies: {e}")
+
     def get_track_info(self, track_id: str, quality_tier: QualityEnum, codec_options: CodecOptions, data: Optional[Dict[str, Any]] = None, **kwargs) -> Optional[TrackInfo]:
         if self._debug:
             print(f"[Apple Music Debug] get_track_info called for track_id: {track_id}, quality_tier: {quality_tier.name}")
+
+        # Check for cookies before proceeding
+        self._check_and_reload_cookies()
 
         # Extract country from either direct kwargs or the 'data' dict
         country = kwargs.get('country') or (data.get('country') if data else None)
@@ -752,6 +798,9 @@ class ModuleInterface:
     def get_track_download(self, track_id: str, quality_tier: QualityEnum, **kwargs) -> Optional[TrackDownloadInfo]:
         if self._debug:
             print(f"[Apple Music Debug] get_track_download called for track_id: {track_id}, quality_tier: {quality_tier.name}")
+
+        # Check for cookies before proceeding
+        self._check_and_reload_cookies()
 
         # Reset rich tagging flag for each new download
         self._using_rich_tagging = False
