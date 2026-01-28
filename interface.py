@@ -552,35 +552,52 @@ class ModuleInterface:
             search_results = []
             if search_type in results:
                 for item in results[search_type]['data']:
+                    attrs = item.get('attributes', {})
+                    
                     # Extract artist information
                     artists = []
                     if query_type == DownloadTypeEnum.artist:
-                        artists = [item['attributes']['name']]
-                    elif 'artistName' in item['attributes']:
-                        artists = [item['attributes']['artistName']]
-                    elif 'curatorName' in item['attributes']:  # For playlists
-                        artists = [item['attributes']['curatorName']]
+                        artists = [attrs.get('name', '')]
+                    elif 'artistName' in attrs:
+                        artists = [attrs['artistName']]
+                    elif 'curatorName' in attrs:  # For playlists
+                        artists = [attrs['curatorName']]
                     
                     # Calculate duration for tracks
                     duration = None
-                    if 'durationInMillis' in item['attributes']:
-                        duration = item['attributes']['durationInMillis'] // 1000
+                    if 'durationInMillis' in attrs:
+                        duration = attrs['durationInMillis'] // 1000
                     
                     # Get additional info
                     additional = []
-                    if 'contentRating' in item['attributes']:
-                        additional.append(item['attributes']['contentRating'])
-                    if 'trackCount' in item['attributes']:
-                        additional.append(f"{item['attributes']['trackCount']} tracks")
+                    if 'contentRating' in attrs:
+                        additional.append(attrs['contentRating'])
+                    if 'trackCount' in attrs:
+                        additional.append(f"{attrs['trackCount']} tracks")
+                    
+                    # Extract cover URL from artwork template (small size for search results)
+                    cover_url = None
+                    artwork = attrs.get('artwork', {})
+                    if artwork and artwork.get('url'):
+                        # Use 56x56 for search result thumbnails
+                        cover_url = artwork['url'].replace('{w}', '56').replace('{h}', '56')
+                    
+                    # Extract preview URL (Apple Music provides 30-second previews)
+                    preview_url = None
+                    previews = attrs.get('previews', [])
+                    if previews and len(previews) > 0:
+                        preview_url = previews[0].get('url')
                     
                     search_results.append(SearchResult(
                         result_id=item['id'],
-                        name=item['attributes']['name'],
+                        name=attrs.get('name', ''),
                         artists=artists,
                         duration=duration,
-                        year=self._extract_year(item['attributes'].get('releaseDate')),
-                        explicit=item['attributes'].get('contentRating') == 'explicit',
+                        year=self._extract_year(attrs.get('releaseDate')),
+                        explicit=attrs.get('contentRating') == 'explicit',
                         additional=additional,
+                        image_url=cover_url,
+                        preview_url=preview_url,
                         extra_kwargs={'raw_result': item}
                     ))
             
