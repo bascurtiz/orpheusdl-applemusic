@@ -963,7 +963,7 @@ class ModuleInterface:
         print(f"[Apple Music] Authentication check: is_authenticated={self.is_authenticated}")
         if not self.is_authenticated:
 
-            raise AuthenticationError('"cookies.txt" not found, invalid, or expired.')
+            raise AuthenticationError('"cookies.txt" not found in config folder or is invalid/expired.')
 
         # Ensure gamdl components are initialized (downloader and downloader_song)
 
@@ -1389,7 +1389,7 @@ class ModuleInterface:
                 raise TrackUnavailableError(customer_message) from e
 
             if '"failureType":"2002"' in error_str or "Your session has ended" in error_str:
-                raise DownloadError('"cookies.txt" not found, invalid, or expired.')
+                raise DownloadError('"cookies.txt" not found in config folder or is invalid/expired.')
             
             # Create a clean, concise error message
             error_msg = str(e)
