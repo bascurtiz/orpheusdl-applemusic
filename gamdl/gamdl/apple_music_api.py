@@ -42,15 +42,25 @@ class AppleMusicApi:
             media_user_token = self.session.cookies.get_dict().get("media-user-token")
             if media_user_token:
                 media_user_token_found = True
-                print("[gamdl AppleMusicApi DEBUG] Media-User-Token found in cookies.")
+                # Log only once per instance to avoid spam when _set_session is called repeatedly
+                if not getattr(self, "_logged_token_ok", False):
+                    self._logged_token_ok = True
+                    print("[gamdl AppleMusicApi DEBUG] Media-User-Token found in cookies.")
             else:
-                print("[gamdl AppleMusicApi WARNING] cookies.txt loaded, but Media-User-Token not found within.")
+                if not getattr(self, "_logged_token_warn", False):
+                    self._logged_token_warn = True
+                    print("[gamdl AppleMusicApi WARNING] cookies.txt loaded, but Media-User-Token not found within.")
+            media_user_token = media_user_token or ""
         else:
-            print(f"[gamdl AppleMusicApi WARNING] cookies_path is None or file does not exist: {self.cookies_path}. Media-User-Token will be empty.")
+            if not getattr(self, "_logged_cookie_path_warn", False):
+                self._logged_cookie_path_warn = True
+                print(f"[gamdl AppleMusicApi WARNING] cookies_path is None or file does not exist: {self.cookies_path}. Media-User-Token will be empty.")
             media_user_token = ""
         
         if not media_user_token_found and self.cookies_path:
-             print("[gamdl AppleMusicApi ERROR] media-user-token not found in provided cookies. This is critical for authenticated requests.")
+            if not getattr(self, "_logged_token_error", False):
+                self._logged_token_error = True
+                print("[gamdl AppleMusicApi ERROR] media-user-token not found in provided cookies. This is critical for authenticated requests.")
 
         self.session.headers.update(
             {
@@ -315,18 +325,9 @@ class AppleMusicApi:
         track_uri: str,
         challenge: str,
     ) -> str:
-        print("[gamdl AppleMusicApi DEBUG] Entering get_widevine_license method.")
-        # Force re-initialization of the session to ensure all tokens and headers are fresh
-        print("[gamdl AppleMusicApi DEBUG] Attempting to re-run _set_session() for freshness...")
-        try:
-            self._set_session() # Call _set_session to refresh cookies, bearer token, and headers
-            print("[gamdl AppleMusicApi DEBUG] _set_session() completed.")
-        except Exception as e_set_session:
-            print(f"[gamdl AppleMusicApi ERROR] Failed to re-run _set_session in get_widevine_license: {e_set_session}. Proceeding with existing session.")
-            # If _set_session fails here, we'll proceed with the potentially stale session, 
-            # but this indicates a deeper problem with re-initializing.
-
-        print(f"[gamdl AppleMusicApi DEBUG] get_widevine_license called for track_id: {track_id}") # Duplicating for clarity after potential re-init
+        # Use existing session; avoid re-running _set_session() every time (it does 2–3 HTTP
+        # requests and makes license acquisition very slow). Session is set at init; if token
+        # expires, the license request will fail and caller can retry or re-auth.
         print(f"[gamdl AppleMusicApi DEBUG] Current storefront for this API session: {self.storefront}")
         print(f"[gamdl AppleMusicApi DEBUG] track_uri (to be used in payload): {track_uri}")
 

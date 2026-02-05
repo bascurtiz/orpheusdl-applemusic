@@ -1418,19 +1418,35 @@ class ModuleInterface:
 
             album_data = self.apple_music_api.get_album(album_id)
             attrs = album_data['attributes']
-            
-            # Extract track IDs
-            track_ids = []
-            if 'relationships' in album_data and 'tracks' in album_data['relationships']:
-                track_ids = [track['id'] for track in album_data['relationships']['tracks']['data']]
-            
+            album_artist = attrs.get('artistName', '')
+            cover_url = self._get_cover_url(attrs.get('artwork', {}).get('url'))
+            release_year = self._extract_year(attrs.get('releaseDate'))
+            # Use full track data from API when available to avoid N get_track_info calls in GUI
+            tracks_out = []
+            rel_tracks = (album_data.get('relationships') or {}).get('tracks', {}).get('data', [])
+            for idx, track in enumerate(rel_tracks, start=1):
+                t_attrs = track.get('attributes') or {}
+                if t_attrs:
+                    name = t_attrs.get('name') or f'Track {idx}'
+                    dur_ms = t_attrs.get('durationInMillis')
+                    duration_sec = (dur_ms // 1000) if isinstance(dur_ms, (int, float)) else None
+                    tracks_out.append({
+                        'id': track.get('id', ''),
+                        'name': name,
+                        'duration': duration_sec,
+                        'artist': album_artist,
+                        'release_year': release_year,
+                        'cover_url': cover_url,
+                    })
+                else:
+                    tracks_out.append(track.get('id', ''))
             return AlbumInfo(
                 name=attrs['name'],
-                artist=attrs.get('artistName', ''),
+                artist=album_artist,
                 artist_id='',
-                cover_url=self._get_cover_url(attrs.get('artwork', {}).get('url')),
-                release_year=self._extract_year(attrs.get('releaseDate')),
-                tracks=track_ids,
+                cover_url=cover_url,
+                release_year=release_year,
+                tracks=tracks_out,
                 track_extra_kwargs={'country': country}
             )
             
@@ -1461,18 +1477,35 @@ class ModuleInterface:
                 playlist_data = self.apple_music_api.get_playlist(playlist_id)
             
             attrs = playlist_data['attributes']
-            
-            # Extract track IDs
-            track_ids = []
-            if 'relationships' in playlist_data and 'tracks' in playlist_data['relationships']:
-                track_ids = [track['id'] for track in playlist_data['relationships']['tracks']['data']]
-            
+            cover_url = self._get_cover_url(attrs.get('artwork', {}).get('url'))
+            release_year = self._extract_year(attrs.get('lastModifiedDate'))
+            creator = attrs.get('curatorName', 'Unknown Creator')
+            # Use full track data from API when available to avoid N get_track_info calls in GUI (same as album)
+            tracks_out = []
+            rel_tracks = (playlist_data.get('relationships') or {}).get('tracks', {}).get('data', [])
+            for idx, track in enumerate(rel_tracks, start=1):
+                t_attrs = track.get('attributes') or {}
+                if t_attrs:
+                    name = t_attrs.get('name') or f'Track {idx}'
+                    dur_ms = t_attrs.get('durationInMillis')
+                    duration_sec = (dur_ms // 1000) if isinstance(dur_ms, (int, float)) else None
+                    artist = t_attrs.get('artistName') or creator
+                    tracks_out.append({
+                        'id': track.get('id', ''),
+                        'name': name,
+                        'duration': duration_sec,
+                        'artist': artist,
+                        'release_year': release_year,
+                        'cover_url': cover_url,
+                    })
+                else:
+                    tracks_out.append(track.get('id', ''))
             return PlaylistInfo(
                 name=attrs.get('name', 'Unknown Playlist'),
-                creator=attrs.get('curatorName', 'Unknown Creator'),
-                release_year=self._extract_year(attrs.get('lastModifiedDate')),
-                tracks=track_ids,
-                cover_url=self._get_cover_url(attrs.get('artwork', {}).get('url')),
+                creator=creator,
+                release_year=release_year,
+                tracks=tracks_out,
+                cover_url=cover_url,
                 track_extra_kwargs={'data': {}}
             )
             
@@ -1495,17 +1528,31 @@ class ModuleInterface:
             raise self.exception(f"No data returned for artist ID {artist_id}. They may not be available on the '{self.apple_music_api.storefront}' storefront.")
 
         attrs = artist_data['attributes']
-        
-        # Extract album IDs safely from relationships on the main object
-        albums = []
-        if 'relationships' in artist_data and 'albums' in artist_data['relationships']:
-            albums_data = artist_data['relationships']['albums'].get('data', [])
-            albums = [album['id'] for album in albums_data if 'id' in album]
-        
+        artist_name = attrs.get('name', 'Unknown Artist')
+        cover_url_default = self._get_cover_url(attrs.get('artwork', {}).get('url'))
+        # Use full album data from API when available to avoid N get_album_info calls in GUI
+        albums_out = []
+        rel_albums = (artist_data.get('relationships') or {}).get('albums', {}).get('data', [])
+        for album in rel_albums:
+            a_attrs = album.get('attributes') or {}
+            if a_attrs:
+                name = a_attrs.get('name') or 'Unknown Album'
+                release_year = self._extract_year(a_attrs.get('releaseDate'))
+                album_artist = a_attrs.get('artistName') or artist_name
+                cover_url = self._get_cover_url(a_attrs.get('artwork', {}).get('url')) or cover_url_default
+                albums_out.append({
+                    'id': album.get('id', ''),
+                    'name': name,
+                    'artist': album_artist,
+                    'release_year': release_year,
+                    'cover_url': cover_url,
+                })
+            else:
+                albums_out.append(album.get('id', ''))
         return ArtistInfo(
-            name=attrs.get('name', 'Unknown Artist'),
+            name=artist_name,
             artist_id=artist_id,
-            albums=albums,
+            albums=albums_out,
             album_extra_kwargs={'country': country}
         )
 
