@@ -568,12 +568,15 @@ class ModuleInterface:
                     if 'durationInMillis' in attrs:
                         duration = attrs['durationInMillis'] // 1000
                     
-                    # Get additional info
+                    # Get additional info (Tracks first, then content rating)
                     additional = []
+                    if 'trackCount' in attrs:
+                        tc = attrs['trackCount']; additional.append(f"1 track" if tc == 1 else f"{tc} tracks")
+                    # Only hide playlists that explicitly have 0 tracks; show playlists when trackCount is missing (API may omit it)
+                    if query_type == DownloadTypeEnum.playlist and attrs.get('trackCount') == 0:
+                        continue
                     if 'contentRating' in attrs:
                         additional.append(attrs['contentRating'])
-                    if 'trackCount' in attrs:
-                        additional.append(f"{attrs['trackCount']} tracks")
                     
                     # Extract cover URL from artwork template (small size for search results)
                     cover_url = None
@@ -588,12 +591,16 @@ class ModuleInterface:
                     if previews and len(previews) > 0:
                         preview_url = previews[0].get('url')
                     
+                    # For playlists, use lastModifiedDate for year when releaseDate is not set
+                    year_val = self._extract_year(attrs.get('releaseDate'))
+                    if year_val is None and query_type == DownloadTypeEnum.playlist:
+                        year_val = self._extract_year(attrs.get('lastModifiedDate'))
                     search_results.append(SearchResult(
                         result_id=item['id'],
                         name=attrs.get('name', ''),
                         artists=artists,
                         duration=duration,
-                        year=self._extract_year(attrs.get('releaseDate')),
+                        year=year_val,
                         explicit=attrs.get('contentRating') == 'explicit',
                         additional=additional,
                         image_url=cover_url,
@@ -1540,12 +1547,17 @@ class ModuleInterface:
                 release_year = self._extract_year(a_attrs.get('releaseDate'))
                 album_artist = a_attrs.get('artistName') or artist_name
                 cover_url = self._get_cover_url(a_attrs.get('artwork', {}).get('url')) or cover_url_default
+                additional = ''
+                tc = a_attrs.get('trackCount')
+                if tc is not None and tc > 0:
+                    additional = "1 track" if tc == 1 else f"{tc} tracks"
                 albums_out.append({
                     'id': album.get('id', ''),
                     'name': name,
                     'artist': album_artist,
                     'release_year': release_year,
                     'cover_url': cover_url,
+                    'additional': additional,
                 })
             else:
                 albums_out.append(album.get('id', ''))
