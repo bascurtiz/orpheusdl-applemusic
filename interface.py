@@ -1431,8 +1431,7 @@ class ModuleInterface:
             raise DownloadError(f"Apple Music: Unexpected error during download of track {track_id} - {error_msg}")
 
     def get_album_info(self, album_id: str, **kwargs) -> Optional[AlbumInfo]:
-        """Get album information"""
-        self._ensure_credentials()
+        """Get album information (catalog works without cookies; download requires credentials)."""
         try:
             # Extract country from kwargs and set storefront
             country = kwargs.get('data', {}).get('country')
@@ -1476,8 +1475,7 @@ class ModuleInterface:
             raise self.exception(f"Failed to get album info: {e}")
 
     def get_playlist_info(self, playlist_id, data: dict = None, **kwargs):
-        """Get playlist information"""
-        self._ensure_credentials()
+        """Get playlist information (catalog works without cookies; download requires credentials)."""
         try:
             # Extract country from kwargs and set storefront
             country = kwargs.get('country') or (data.get('country') if data else None)
@@ -1536,8 +1534,7 @@ class ModuleInterface:
             raise self.exception(f"Failed to get playlist info: {e}")
 
     def get_artist_info(self, artist_id, get_credited_albums=True, data: dict = None, **kwargs):
-        """Get artist information"""
-        self._ensure_credentials()
+        """Get artist information (catalog works without cookies; download requires credentials)."""
         # Extract country from kwargs and set storefront
         country = kwargs.get('country') or (data.get('country') if data else None)
         self._set_storefront(country)
