@@ -622,6 +622,28 @@ class ModuleInterface:
         except (ValueError, IndexError):
             return None
 
+    def _ensure_credentials(self):
+        """
+        Require valid cookies (authenticated session) before download/metadata.
+        Without this, we would return 'Not Authenticated' and fail later. Matches
+        Spotify/Qobuz/Deezer: show what's missing and where to fill it in.
+        """
+        self._check_and_reload_cookies()
+        if self.is_authenticated and self.apple_music_api:
+            return
+        cookies_path_str = self.settings.get('cookies_path', './config/cookies.txt')
+        cookies_path = Path(cookies_path_str) if cookies_path_str else None
+        if not cookies_path or not cookies_path.exists():
+            default_cookies = Path('./config/cookies.txt')
+            if default_cookies.exists():
+                cookies_path = default_cookies
+        error_msg = (
+            'Apple Music credentials are missing in settings.json. '
+            'Please add a cookies.txt file (Netscape format) at the path set in cookies_path (e.g. config/cookies.txt), '
+            'or set cookies_path in the OrpheusDL GUI Settings tab (Apple Music) or edit config/settings.json directly.'
+        )
+        raise self.exception(error_msg)
+
     def _check_and_reload_cookies(self):
         """
         Checks if cookies.txt exists and reloads the session if needed.
@@ -669,18 +691,11 @@ class ModuleInterface:
         if self._debug:
             print(f"[Apple Music Debug] get_track_info called for track_id: {track_id}, quality_tier: {quality_tier.name}")
 
-        # Check for cookies before proceeding
-        self._check_and_reload_cookies()
+        self._ensure_credentials()
 
         # Extract country from either direct kwargs or the 'data' dict
         country = kwargs.get('country') or (data.get('country') if data else None)
         self._set_storefront(country)
-
-        if not self.is_authenticated or not self.apple_music_api:
-            if self._debug:
-                print("[Apple Music Error] Not authenticated or API not initialized for get_track_info.")
-            # Returning an error-state TrackInfo might be better than None if Orpheus expects an object
-            return TrackInfo(name=f"Error: Not Authenticated for {track_id}", error="Not Authenticated", artists=["Unknown Artist"], album="", album_id=None, artist_id=None, duration=0, codec=CodecEnum.AAC, bitrate=0, sample_rate=0, release_year=None, cover_url=None, explicit=False, tags=Tags())
 
         try:
             # Check if we have raw_result from search - use it to avoid extra API call
@@ -823,8 +838,7 @@ class ModuleInterface:
         if self._debug:
             print(f"[Apple Music Debug] get_track_download called for track_id: {track_id}, quality_tier: {quality_tier.name}")
 
-        # Check for cookies before proceeding
-        self._check_and_reload_cookies()
+        self._ensure_credentials()
 
         # Reset rich tagging flag for each new download
         self._using_rich_tagging = False
@@ -1418,6 +1432,7 @@ class ModuleInterface:
 
     def get_album_info(self, album_id: str, **kwargs) -> Optional[AlbumInfo]:
         """Get album information"""
+        self._ensure_credentials()
         try:
             # Extract country from kwargs and set storefront
             country = kwargs.get('data', {}).get('country')
@@ -1462,6 +1477,7 @@ class ModuleInterface:
 
     def get_playlist_info(self, playlist_id, data: dict = None, **kwargs):
         """Get playlist information"""
+        self._ensure_credentials()
         try:
             # Extract country from kwargs and set storefront
             country = kwargs.get('country') or (data.get('country') if data else None)
@@ -1521,6 +1537,7 @@ class ModuleInterface:
 
     def get_artist_info(self, artist_id, get_credited_albums=True, data: dict = None, **kwargs):
         """Get artist information"""
+        self._ensure_credentials()
         # Extract country from kwargs and set storefront
         country = kwargs.get('country') or (data.get('country') if data else None)
         self._set_storefront(country)
