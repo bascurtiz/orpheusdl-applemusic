@@ -367,17 +367,18 @@ class Downloader:
             self.download_nm3u8dlre(path, stream_url)
 
     def download_ytdlp(self, path: Path, stream_url: str):
-        with YoutubeDL(
-            {
-                "quiet": True,
-                "no_warnings": True,
-                "outtmpl": str(path),
-                "allow_unplayable_formats": True,
-                "fixup": "never",
-                "allowed_extractors": ["generic"],
-                "noprogress": self.silent,
-            }
-        ) as ydl:
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "outtmpl": str(path),
+            "allow_unplayable_formats": True,
+            "fixup": "never",
+            "allowed_extractors": ["generic"],
+            "noprogress": self.silent,
+        }
+        if self.ffmpeg_path_full:
+            opts["ffmpeg_location"] = self.ffmpeg_path_full
+        with YoutubeDL(opts) as ydl:
             ydl.download(stream_url)
 
     def download_nm3u8dlre(self, path: Path, stream_url: str):

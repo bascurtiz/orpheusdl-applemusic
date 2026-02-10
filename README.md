@@ -20,9 +20,16 @@ This module enables downloading music from Apple Music using OrpheusDL. It bridg
 You need an active Apple Music subscription to download content.
 
 ### 3. FFmpeg
-Make sure FFmpeg path is set in settings.json, or put it to your OS environment.<br>
-- Instructions for macOS: https://phoenixnap.com/kb/ffmpeg-mac<br>
-- Instructions for Win: https://phoenixnap.com/kb/ffmpeg-windows<br>
+For default AAC 256kbps downloads, **only FFmpeg is required** (mp4decrypt and MP4Box are not needed).
+
+You can provide FFmpeg in any of these ways:
+- Place the `ffmpeg` binary (or `ffmpeg.exe` on Windows) in the OrpheusDL folder (next to `orpheus.py`) — the module will find it automatically
+- Set the path in `config/settings.json` under `global.advanced.ffmpeg_path`
+- Install FFmpeg to your system PATH
+
+Instructions for installing FFmpeg:<br>
+- macOS: https://phoenixnap.com/kb/ffmpeg-mac<br>
+- Windows: https://phoenixnap.com/kb/ffmpeg-windows<br>
 
 ### 4. Cookies File
 You need to export your Apple Music cookies to authenticate with the service.
@@ -178,12 +185,12 @@ pip3 install --upgrade certifi
 - Try again later as Apple Music sometimes has delayed availability
 - Check if the track is available in your region
 
-### FFmpeg Not Found Error
-**Error**: `TypeError: expected str, bytes or os.PathLike object, not NoneType`
+### FFmpeg Required / Not Found Error
+**Error**: `Apple Music streaming error (FFmpeg required for processing)` or similar
 
 **Solution**:
-1. Make sure FFmpeg is installed on your system
-2. Set the correct path in `config/settings.json`:
+1. Download FFmpeg and place the `ffmpeg` binary (or `ffmpeg.exe` on Windows) in the OrpheusDL folder, next to `orpheus.py`
+2. Or set the correct path in `config/settings.json`:
    ```json
    {
      "global": {
@@ -195,6 +202,12 @@ pip3 install --upgrade certifi
    ```
 3. Or install FFmpeg to your system PATH
 
+**macOS only**: If you placed ffmpeg in the OrpheusDL folder and it still fails, macOS may be blocking the binary (Gatekeeper quarantine). Run:
+   ```bash
+   xattr -d com.apple.quarantine /path/to/OrpheusDL/ffmpeg
+   ```
+   Or right-click the ffmpeg file → Open (once) to clear the quarantine.
+
 ### Import Errors
 - Ensure the gamdl folder is in the correct location
 - Check that all gamdl dependencies are installed
@@ -204,7 +217,7 @@ pip3 install --upgrade certifi
 
 ### macOS Specific
 - **SSL Certificates**: Must be installed before first use (see installation section)
-- **FFmpeg Path**: May need manual configuration in settings
+- **FFmpeg**: Place ffmpeg in the OrpheusDL folder or set path in settings. If downloads fail despite ffmpeg being present, remove the quarantine flag: `xattr -d com.apple.quarantine /path/to/ffmpeg`
 - **Homebrew Python**: If using Homebrew Python, certificate installation may differ
 
 ### General
