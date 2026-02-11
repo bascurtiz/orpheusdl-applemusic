@@ -995,20 +995,24 @@ class ModuleInterface:
             indent_spaces = "        "  # 8 spaces
 
 
-        print(f"[Apple Music] Authentication check: is_authenticated={self.is_authenticated}")
+        if self._debug:
+            print(f"[Apple Music] Authentication check: is_authenticated={self.is_authenticated}")
         if not self.is_authenticated:
 
             raise AuthenticationError('"cookies.txt" not found in config folder or is invalid/expired.')
 
         # Ensure gamdl components are initialized (downloader and downloader_song)
 
-        print(f"[Apple Music] Checking gamdl components: downloader_song={self.gamdl_downloader_song is not None}, downloader={self.gamdl_downloader is not None}")
+        if self._debug:
+            print(f"[Apple Music] Checking gamdl components: downloader_song={self.gamdl_downloader_song is not None}, downloader={self.gamdl_downloader is not None}")
         if not self.gamdl_downloader_song or not self.gamdl_downloader:
 
-            print("[Apple Music] gamdl components not initialized, calling _initialize_gamdl_components...")
+            if self._debug:
+                print("[Apple Music] gamdl components not initialized, calling _initialize_gamdl_components...")
             self._initialize_gamdl_components() # This method should set up self.gamdl_downloader and self.gamdl_downloader_song
 
-            print(f"[Apple Music] After init: downloader_song={self.gamdl_downloader_song is not None}, downloader={self.gamdl_downloader is not None}")
+            if self._debug:
+                print(f"[Apple Music] After init: downloader_song={self.gamdl_downloader_song is not None}, downloader={self.gamdl_downloader is not None}")
             if not self.gamdl_downloader_song or not self.gamdl_downloader:
 
                 print("[Apple Music Error] gamdl components failed to initialize.")
