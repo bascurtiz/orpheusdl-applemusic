@@ -52,23 +52,10 @@ Before using this module, you **must** install SSL certificates to avoid connect
 
 #### **Quick Method** (Recommended):
 1. Open Terminal
-2. Run this command (replace `3.11` with your Python version):<br>
-
-   ```bash
-   open "/Applications/Python 3.11/Install Certificates.command"
-   ```
-
-If the above doesn't work, try:
+2. Make sure certificates for Python are up to date:
 ```bash
 pip3 install --upgrade certifi
 ```
-
-If both methods fail, run directly in Terminal:
-```bash
-/Applications/Python\ 3.11/Install\ Certificates.command
-```
-(Replace `3.11` with your Python version)<br><br>
-
 
 ### All Platforms Setup (Windows/macOS/Linux)
 
@@ -77,38 +64,10 @@ If both methods fail, run directly in Terminal:
 git clone https://github.com/bascurtiz/orpheusdl-applemusic modules/applemusic
 ```
 
-2. **Install Apple Music module dependencies**:<br>
-
-Windows:
-```bash
-cd modules\applemusic\gamdl
-pip install -r requirements.txt
-```
-macOS:
-```bash
-cd modules/applemusic/gamdl
-pip3 install -r requirements.txt
-```
-
-3. **Place your cookies file**:<br>
+2. **Place your cookies file**:<br>
 Put your `cookies.txt` file in the `/config` folder (next to settings.json)
 
-4. **Run orpheus.py**:<br>
-
-Windows:
-```bash
-cd..
-cd..
-cd..
-python orpheus.py
-```
-macOS:
-```bash
-cd ..
-cd ..
-cd ..
-python3 orpheus.py
-```
+3. **Run orpheus.py**:<br>
 Now the config/settings.json file should be updated with the Apple Music settings.
 
 ## Usage
