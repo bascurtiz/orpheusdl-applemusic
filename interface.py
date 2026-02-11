@@ -311,10 +311,12 @@ class ModuleInterface:
 
     def _initialize_gamdl_components(self):
 
-        print(f"[Apple Music] _initialize_gamdl_components CALLED. gamdl_downloader exists: {self.gamdl_downloader is not None}")
+        if self._debug:
+            print(f"[Apple Music] _initialize_gamdl_components CALLED. gamdl_downloader exists: {self.gamdl_downloader is not None}")
         if not self.gamdl_downloader: # Check for the main Downloader instance
 
-            print("[Apple Music] Initializing gamdl_downloader...")
+            if self._debug:
+                print("[Apple Music] Initializing gamdl_downloader...")
             try:
                 orpheus_temp_path = Path(self.settings.get("temp_path", tempfile.gettempdir()))
                 
@@ -337,11 +339,13 @@ class ModuleInterface:
                 # Helper to find and fix binaries
                 def resolve_binary_path(binary_name, default_path):
                     # Always log to help debug path resolution issues
-                    print(f"[Apple Music] resolve_binary_path called for: {binary_name}, default_path: {default_path}")
+                    if self._debug:
+                        print(f"[Apple Music] resolve_binary_path called for: {binary_name}, default_path: {default_path}")
                     
                     # If the user specified a custom path (not the default name), verify it exists
                     if default_path != binary_name:
-                        print(f"[Apple Music] Using custom path: {default_path}")
+                        if self._debug:
+                            print(f"[Apple Music] Using custom path: {default_path}")
                         return default_path
 
                     # Search paths for local binaries
@@ -351,13 +355,15 @@ class ModuleInterface:
                     if platform.system() == "Darwin":
                         app_support = os.path.expanduser("~/Library/Application Support/OrpheusDL GUI")
                         search_paths.append(os.path.join(app_support, binary_name))
-                        print(f"[Apple Music] Added Application Support path: {os.path.join(app_support, binary_name)}")
+                        if self._debug:
+                            print(f"[Apple Music] Added Application Support path: {os.path.join(app_support, binary_name)}")
                     
                     # 2. Check relative to executable (frozen app)
                     if getattr(sys, 'frozen', False):
                         app_dir = os.path.dirname(sys.executable)
                         search_paths.append(os.path.join(app_dir, binary_name))
-                        print(f"[Apple Music] Added frozen app dir path: {os.path.join(app_dir, binary_name)}")
+                        if self._debug:
+                            print(f"[Apple Music] Added frozen app dir path: {os.path.join(app_dir, binary_name)}")
                         
                         # macOS Bundle logic
                         if platform.system() == "Darwin" and ".app/Contents/MacOS" in sys.executable:
@@ -365,42 +371,49 @@ class ModuleInterface:
                             parent_dir = os.path.dirname(bundle_dir)
                             search_paths.append(os.path.join(bundle_dir, binary_name)) 
                             search_paths.append(os.path.join(parent_dir, binary_name))
-                            print(f"[Apple Music] Added bundle paths: {os.path.join(bundle_dir, binary_name)}, {os.path.join(parent_dir, binary_name)}")
+                            if self._debug:
+                                print(f"[Apple Music] Added bundle paths: {os.path.join(bundle_dir, binary_name)}, {os.path.join(parent_dir, binary_name)}")
 
                     # 3. Check CWD
                     search_paths.append(os.path.join(os.getcwd(), binary_name))
-                    print(f"[Apple Music] Added CWD path: {os.path.join(os.getcwd(), binary_name)}")
+                    if self._debug:
+                        print(f"[Apple Music] Added CWD path: {os.path.join(os.getcwd(), binary_name)}")
                     
-                    print(f"[Apple Music] Searching {len(search_paths)} paths for {binary_name}...")
+                    if self._debug:
+                        print(f"[Apple Music] Searching {len(search_paths)} paths for {binary_name}...")
 
                     # Check all search paths
                     for path in search_paths:
                         exists = os.path.isfile(path)
-                        print(f"[Apple Music] Checking: {path} -> {'EXISTS' if exists else 'NOT FOUND'}")
+                        if self._debug:
+                            print(f"[Apple Music] Checking: {path} -> {'EXISTS' if exists else 'NOT FOUND'}")
                         if exists:
                             # Ensure executable permissions
                             if not os.access(path, os.X_OK):
                                 try:
-                                    print(f"[Apple Music] Setting executable permissions for {path}")
+                                    if self._debug:
+                                        print(f"[Apple Music] Setting executable permissions for {path}")
                                     os.chmod(path, 0o755)
                                 except Exception as e:
                                     print(f"[Apple Music Warning] Failed to set executable permissions for {path}: {e}")
                             
-
-                            print(f"[Apple Music] FOUND {binary_name} at: {path}")
+                            if self._debug:
+                                print(f"[Apple Music] FOUND {binary_name} at: {path}")
                             return path
                     
                     # Fallback to system PATH (shutil.which)
 
-                    print(f"[Apple Music] Not found locally, trying shutil.which({binary_name})...")
+                    if self._debug:
+                        print(f"[Apple Music] Not found locally, trying shutil.which({binary_name})...")
                     system_path = shutil.which(binary_name)
                     if system_path:
 
-                        print(f"[Apple Music] Found system {binary_name} at: {system_path}")
+                        if self._debug:
+                            print(f"[Apple Music] Found system {binary_name} at: {system_path}")
                         return system_path
                     
-
-                    print(f"[Apple Music] WARNING: {binary_name} NOT FOUND anywhere!")
+                    if self._debug:
+                        print(f"[Apple Music] WARNING: {binary_name} NOT FOUND anywhere!")
                     return binary_name
 
                 # Resolve all binaries
@@ -414,10 +427,11 @@ class ModuleInterface:
                 mp4decrypt_path = resolve_binary_path(mp4decrypt_name, mp4decrypt_path)
 
 
-                print(f"[Apple Music] Final resolved paths:")
-                print(f"[Apple Music]   ffmpeg: {ffmpeg_path}")
-                print(f"[Apple Music]   mp4box: {mp4box_path}")
-                print(f"[Apple Music]   mp4decrypt: {mp4decrypt_path}")
+                if self._debug:
+                    print(f"[Apple Music] Final resolved paths:")
+                    print(f"[Apple Music]   ffmpeg: {ffmpeg_path}")
+                    print(f"[Apple Music]   mp4box: {mp4box_path}")
+                    print(f"[Apple Music]   mp4decrypt: {mp4decrypt_path}")
                 
                 self.gamdl_downloader = Downloader(
                     apple_music_api=self.apple_music_api,
