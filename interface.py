@@ -179,8 +179,7 @@ module_information = ModuleInformation(
     session_settings={
         'cookies_path': './config/cookies.txt',
         'language': 'en-US',
-        'codec': 'aac',
-        'quality': 'high',
+        'use_wrapper': False,
         'wrapper_decrypt_ip': '127.0.0.1:10020'
     },
     netlocation_constant='music.apple',
