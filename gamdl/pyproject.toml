@@ -1,28 +1,26 @@
 [project]
 name = "gamdl"
-description = "A Python CLI app for downloading Apple Music songs, music videos and post videos."
-requires-python = ">=3.9"
-authors = [{ name = "glomatico" }]
-dependencies = [
-    "click",
-    "colorama",
-    "inquirerpy",
-    "m3u8",
-    "mutagen",
-    "pillow",
-    "pywidevine",
-    "yt-dlp",
-]
+version = "2.8.5"
+description = "A command-line app for downloading Apple Music songs, music videos and post videos."
 readme = "README.md"
-dynamic = ["version"]
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "async-lru>=2.0.5",
+    "click>=8.3.0",
+    "colorama>=0.4.6",
+    "dataclass-click>=1.0.4",
+    "httpx>=0.28.1",
+    "inquirerpy>=0.3.4",
+    "m3u8>=6.0.0",
+    "mutagen>=1.47.0",
+    "pillow>=12.0.0",
+    "pywidevine>=1.8.0",
+    "yt-dlp>=2025.10.22",
+]
 
 [project.urls]
-homepage = "https://github.com/glomatico/gamdl"
-repository = "https://github.com/glomatico/gamdl"
-
-[build-system]
-requires = ["flit_core"]
-build-backend = "flit_core.buildapi"
+Repository = "https://github.com/glomatico/gamdl"
 
 [project.scripts]
-gamdl = "gamdl.cli:main"
+gamdl = "gamdl.cli.cli:main"
