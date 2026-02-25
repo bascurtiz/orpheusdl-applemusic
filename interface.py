@@ -30,10 +30,9 @@ LAST_GAMDL_ERROR = None
 def _lazy_import_gamdl():
     """Lazy import gamdl components to avoid conflicts with GUI patches"""
     global GAMDL_AVAILABLE, LAST_GAMDL_ERROR, AppleMusicApi, ItunesApi, GamdlSongCodec, GamdlRemuxMode, GamdlDownloadMode, \
-        AppleMusicDownloader, AppleMusicBaseDownloader, AppleMusicSongDownloader, AppleMusicMusicVideoDownloader, \
-        AppleMusicUploadedVideoDownloader, AppleMusicInterface, AppleMusicSongInterface, \
-        AppleMusicMusicVideoInterface, AppleMusicUploadedVideoInterface, LEGACY_SONG_CODECS, \
-        SyncedLyricsFormat, RemuxFormatMusicVideo
+        AppleMusicDownloader, AppleMusicBaseDownloader, AppleMusicSongDownloader, \
+        AppleMusicInterface, AppleMusicSongInterface, \
+        SyncedLyricsFormat
     
     if GAMDL_AVAILABLE:
         return True
@@ -122,20 +121,15 @@ def _lazy_import_gamdl():
         from gamdl.downloader import (
             AppleMusicBaseDownloader,
             AppleMusicDownloader,
-            AppleMusicMusicVideoDownloader,
             AppleMusicSongDownloader,
-            AppleMusicUploadedVideoDownloader,
         )
         from gamdl.downloader.downloader_song import SongCodec as GamdlSongCodec
         from gamdl.interface import (
             AppleMusicInterface,
-            AppleMusicMusicVideoInterface,
             AppleMusicSongInterface,
-            AppleMusicUploadedVideoInterface,
             SyncedLyricsFormat
         )
         from gamdl.downloader.enums import DownloadMode as GamdlDownloadMode, RemuxMode as GamdlRemuxMode
-        from gamdl.interface.constants import LEGACY_SONG_CODECS
 
         globals()['AppleMusicApi'] = AppleMusicApi
         globals()['ItunesApi'] = ItunesApi
@@ -145,12 +139,8 @@ def _lazy_import_gamdl():
         globals()['AppleMusicDownloader'] = AppleMusicDownloader
         globals()['AppleMusicBaseDownloader'] = AppleMusicBaseDownloader
         globals()['AppleMusicSongDownloader'] = AppleMusicSongDownloader
-        globals()['AppleMusicMusicVideoDownloader'] = AppleMusicMusicVideoDownloader
-        globals()['AppleMusicUploadedVideoDownloader'] = AppleMusicUploadedVideoDownloader
         globals()['AppleMusicInterface'] = AppleMusicInterface
         globals()['AppleMusicSongInterface'] = AppleMusicSongInterface
-        globals()['AppleMusicMusicVideoInterface'] = AppleMusicMusicVideoInterface
-        globals()['AppleMusicUploadedVideoInterface'] = AppleMusicUploadedVideoInterface
         globals()['SyncedLyricsFormat'] = SyncedLyricsFormat
         globals()['LEGACY_SONG_CODECS'] = LEGACY_SONG_CODECS
 
@@ -175,23 +165,35 @@ def _lazy_import_gamdl():
                     return None
 
                 # Filter for LOSSLESS (Standard Lossless) to avoid HI-RES (96k+)
-                if codec.value == "alac" and self.quality_tier == QualityEnum.LOSSLESS:
-                    filtered = []
-                    for p in matching_playlists:
-                        audio_id = p["stream_info"]["audio"] 
-                        try:
-                            parts = audio_id.split('-')
-                            if len(parts) >= 4:
-                                sample_rate = int(parts[-2])
-                                if sample_rate <= 48000:
-                                    filtered.append(p)
-                            else:
-                                filtered.append(p)
-                        except:
-                            filtered.append(p)
+                
+                if codec.value == "alac" and (self.quality_tier == QualityEnum.LOSSLESS or self.quality_tier == QualityEnum.HIFI):
+                    # We always want to check for Hi-Res if we haven't explicitly requested it via HIFI+SomeOtherFlag?
+                    # Wait, if the user hit ALAC, they likely want standard lossless.
+                    # If they hit HI-RES, they want Hi-Res.
                     
-                    if filtered:
-                        matching_playlists = filtered
+                    # If quality_tier is LOSSLESS, we definitely want to limit to 48k.
+                    # If quality_tier is HIFI, we usually want max, UNLESS it's an "ALAC" button that passes HIFI?
+                    
+                    # Let's check bitwise for LOSSLESS specifically.
+                    if self.quality_tier == QualityEnum.LOSSLESS:
+                        filtered = []
+                        for p in matching_playlists:
+                            audio_id = p["stream_info"]["audio"] 
+                            try:
+                                parts = audio_id.split('-')
+                                if len(parts) >= 4:
+                                    sample_rate = int(parts[-2])
+                                    if sample_rate <= 48000:
+                                        filtered.append(p)
+                                else:
+                                    filtered.append(p)
+                            except:
+                                filtered.append(p)
+                        
+                        if filtered:
+                            matching_playlists = filtered
+                        elif self.quality_tier == QualityEnum.LOSSLESS:
+                            print(f"[Apple Music Debug] No playlists matched sample_rate <= 48000. Returning best available.")
 
                 return max(
                     matching_playlists,
@@ -595,7 +597,7 @@ class ModuleInterface:
         codec_lower = codec_str.lower()
         if codec_lower == 'aac':
             return GamdlSongCodec.AAC_LEGACY
-        elif codec_lower == 'alac':
+        elif codec_lower == 'alac' or 'alac-' in codec_lower:
             return GamdlSongCodec.ALAC
         elif codec_lower == 'atmos':
             return GamdlSongCodec.ATMOS
@@ -667,7 +669,6 @@ class ModuleInterface:
                     wrapper_decrypt_ip=self.settings.get('wrapper_decrypt_ip', '127.0.0.1:10020'),
                     overwrite=True,
                     download_mode=self.settings.get('download_mode', GamdlDownloadMode.YTDLP),
-                    remux_mode=self.settings.get('remux_mode', GamdlRemuxMode.FFMPEG),
                     silent=not self._debug
                 )
                 
@@ -675,8 +676,6 @@ class ModuleInterface:
                 self.gamdl_interface = AppleMusicInterface(self.apple_music_api, self.itunes_api)
                 # Use our customized subclass to handle quality-aware ALAC selection
                 self.gamdl_song_interface = OrpheusAppleMusicSongInterface(self.gamdl_interface)
-                self.gamdl_music_video_interface = AppleMusicMusicVideoInterface(self.gamdl_interface)
-                self.gamdl_uploaded_video_interface = AppleMusicUploadedVideoInterface(self.gamdl_interface)
                 
                 # Setup sub-downloaders
                 self.gamdl_song_downloader = AppleMusicSongDownloader(
@@ -684,22 +683,12 @@ class ModuleInterface:
                     interface=self.gamdl_song_interface,
                     codec=requested_codec
                 )
-                self.gamdl_music_video_downloader = AppleMusicMusicVideoDownloader(
-                    base_downloader=self.gamdl_base_downloader,
-                    interface=self.gamdl_music_video_interface
-                )
-                self.gamdl_uploaded_video_downloader = AppleMusicUploadedVideoDownloader(
-                    base_downloader=self.gamdl_base_downloader,
-                    interface=self.gamdl_uploaded_video_interface
-                )
                 
                 # Setup main gamdl downloader
                 self.gamdl_downloader = AppleMusicDownloader(
                     interface=self.gamdl_interface,
                     base_downloader=self.gamdl_base_downloader,
                     song_downloader=self.gamdl_song_downloader,
-                    music_video_downloader=self.gamdl_music_video_downloader,
-                    uploaded_video_downloader=self.gamdl_uploaded_video_downloader
                 )
                 
                 # Alias for backward compatibility in some methods
@@ -856,7 +845,7 @@ class ModuleInterface:
                         continue
 
                         
-                    formatted_traits = self._format_audio_traits(attrs)
+                    formatted_traits = self._format_audio_traits(attrs, item_type=item.get('type'))
                     if formatted_traits:
                         additional.append(formatted_traits)
                     
@@ -1196,7 +1185,7 @@ class ModuleInterface:
                     try:
                         return await s.apple_music_api.get_song(sid)
                     except Exception as fe:
-                        if s._debug:
+                        if getattr(s, '_debug', False):
                             print(f"[Apple Music Debug] API fetch failed for {sid}: {fe}")
                         return None
 
@@ -1271,7 +1260,7 @@ class ModuleInterface:
                                     }
                                 }
                         except Exception as ie:
-                            if s._debug:
+                            if getattr(s, '_debug', False):
                                 print(f"[Apple Music Debug] iTunes lookup failed: {ie}")
                         return None
                     
@@ -1383,7 +1372,7 @@ class ModuleInterface:
                     display_bitrate = 0
                     
                     # Try to get precise info from manifest
-                    precise_info = self._get_precise_alac_info(attrs, effective_codec)
+                    precise_info = self._get_precise_alac_info(attrs, effective_codec, quality_tier=quality_tier)
                     if precise_info:
                         display_bit_depth = precise_info.get('bit_depth', 24)
                         display_sample_rate = precise_info.get('sample_rate', 48000)
@@ -1480,6 +1469,13 @@ class ModuleInterface:
                     pass
             elif 'quality_tier' in kwargs:
                 quality_tier = kwargs.get('quality_tier')
+        
+        # Infer quality_tier from codec override if still None
+        if quality_tier is None and override_song_codec:
+            if 'alac-lossless' in override_song_codec.lower():
+                quality_tier = QualityEnum.LOSSLESS
+            elif 'alac-hi-res' in override_song_codec.lower():
+                quality_tier = QualityEnum.HIFI
 
         # Map quality_tier or string override to enum
         if quality_tier:
@@ -1692,7 +1688,7 @@ class ModuleInterface:
                 # Check for amdecrypt connection error (agent not running)
                 conn_indicators = ["10020", "10061", "127.0.0.1", "connectionrefused", "refused", "geweigerd", "dial tcp"]
                 if any(ind in error_str.lower() for ind in conn_indicators) or isinstance(e, ConnectionRefusedError):
-                    raise DownloadError("Apple Music: Could not connect to the local decryption service (127.0.0.1:10020). Please ensure your Docker/Wrapper container is started and running.") from e
+                    raise DownloadError("Apple Music: Could not connect to the local decryption service. Please ensure your Docker/Wrapper container on (127.0.0.1:10020) is started and running.") from e
                 
                 if self._debug:
                     print(f"[Apple Music Error] gamdl download failed: {type(e).__name__}: {e}")
@@ -1761,7 +1757,7 @@ class ModuleInterface:
                     if not wrapper_enabled:
                         final_msg = f"This {requested_codec_str.upper()} track requires the 'Use Wrapper' setting to be enabled in your Apple Music credentials."
                     else:
-                        final_msg = f"Could not connect to the local decryption service (127.0.0.1:10020). Please ensure your Docker/Wrapper container is started and running."
+                        final_msg = f"Could not connect to the local decryption service. Please ensure your Docker/Wrapper container on (127.0.0.1:10020) is started and running."
                         
             raise DownloadError(f"Apple Music: Download failed - {final_msg}") from e
 
@@ -1812,7 +1808,7 @@ class ModuleInterface:
                     duration_sec = (dur_ms // 1000) if isinstance(dur_ms, (int, float)) else None
                     artist = t_attrs.get('artistName') or album_artist # Use track artist if available, else album artist
                     
-                    additional = self._format_audio_traits(t_attrs)
+                    additional = self._format_audio_traits(t_attrs, item_type='songs')
 
                     # Extract preview URL (Apple Music provides 30-second previews)
                     preview_url = None
@@ -1904,7 +1900,7 @@ class ModuleInterface:
                     duration_sec = (dur_ms // 1000) if isinstance(dur_ms, (int, float)) else None
                     artist = t_attrs.get('artistName') or creator
                     
-                    additional = self._format_audio_traits(t_attrs)
+                    additional = self._format_audio_traits(t_attrs, item_type='songs')
 
                     # Extract preview URL
                     preview_url = None
@@ -1984,7 +1980,7 @@ class ModuleInterface:
                 if tc is not None and tc > 0:
                     additional_parts.append("1 track" if tc == 1 else f"{tc} tracks")
                 
-                formatted_traits = self._format_audio_traits(a_attrs)
+                formatted_traits = self._format_audio_traits(a_attrs, item_type='albums')
                 if formatted_traits:
                     additional_parts.append(formatted_traits)
                     
@@ -2028,7 +2024,7 @@ class ModuleInterface:
                         s_duration_sec = (dur_ms // 1000) if isinstance(dur_ms, (int, float)) else 0
                         s_cover_url = self._get_cover_url(s_attrs.get('artwork', {}).get('url')) or cover_url_default
                         
-                        s_additional = self._format_audio_traits(s_attrs)
+                        s_additional = self._format_audio_traits(s_attrs, item_type='songs')
                         
                         tracks_out.append({
                             'id': song_item.get('id', ''),
@@ -2081,7 +2077,7 @@ class ModuleInterface:
         # Replace template with high resolution
         return artwork_template.replace('{w}x{h}bb.jpg', '1400x1400bb.jpg')
 
-    def _format_audio_traits(self, attrs):
+    def _format_audio_traits(self, attrs, item_type=None):
         """Format audio traits according to GUI display rules"""
         if 'audioTraits' not in attrs:
             return ""
@@ -2104,7 +2100,7 @@ class ModuleInterface:
             else:
                 traits.append(trait.replace('-', ' ').title())
                 
-        if not is_lossless:
+        if not is_lossless and item_type in ('songs', 'music-videos'):
             traits.append('AAC only')
                 
         if has_atmos:
@@ -2113,7 +2109,7 @@ class ModuleInterface:
             
         return " · ".join(traits)
 
-    def _get_precise_alac_info(self, attrs, codec):
+    def _get_precise_alac_info(self, attrs, codec, quality_tier: QualityEnum = None):
         """Fetch HLS manifest and parse audio group ID for exact bit depth and sample rate"""
         # Lazy imports for gamdl logic
         try:
@@ -2148,7 +2144,26 @@ class ModuleInterface:
                 if not matching_playlists:
                     return None
                 
-                # Pick the highest bandwidth playlist for this codec (standard gamdl behavior)
+                # Filter for LOSSLESS (Standard Lossless) to avoid HI-RES (96k+) if requested
+                if codec.value == "alac" and quality_tier == QualityEnum.LOSSLESS:
+                    filtered = []
+                    for p in matching_playlists:
+                        audio_id = p["stream_info"]["audio"] 
+                        try:
+                            parts = audio_id.split('-')
+                            if len(parts) >= 4:
+                                sample_rate = int(parts[-2])
+                                if sample_rate <= 48000:
+                                    filtered.append(p)
+                            else:
+                                filtered.append(p)
+                        except:
+                            filtered.append(p)
+                    
+                    if filtered:
+                        matching_playlists = filtered
+
+                # Pick the highest bandwidth playlist for this codec (respecting our filter above)
                 target = max(matching_playlists, key=lambda x: x["stream_info"]["average_bandwidth"])
                 audio_group_id = target["stream_info"]["audio"] # e.g. "audio-alac-stereo-44100-24"
                 
@@ -2161,7 +2176,7 @@ class ModuleInterface:
                         'bit_depth': int(match.group(2))
                     }
             except Exception as e:
-                if self._debug:
+                if getattr(self, '_debug', False):
                     print(f"[Apple Music Debug] Precise info fetch failed: {e}")
             return None
 

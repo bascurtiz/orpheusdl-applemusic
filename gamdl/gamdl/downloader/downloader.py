@@ -5,21 +5,18 @@ from pathlib import Path
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
 
+from ..api.exceptions import ApiError
 from ..interface import AppleMusicInterface
 from ..utils import safe_gather
 from .constants import (
     ALBUM_MEDIA_TYPE,
     ARTIST_MEDIA_TYPE,
-    MUSIC_VIDEO_MEDIA_TYPE,
     PLAYLIST_MEDIA_TYPE,
     SONG_MEDIA_TYPE,
-    UPLOADED_VIDEO_MEDIA_TYPE,
     VALID_URL_PATTERN,
 )
 from .downloader_base import AppleMusicBaseDownloader
-from .downloader_music_video import AppleMusicMusicVideoDownloader
 from .downloader_song import AppleMusicSongDownloader
-from .downloader_uploaded_video import AppleMusicUploadedVideoDownloader
 from .enums import DownloadMode, RemuxMode
 from .exceptions import (
     ExecutableNotFound,
@@ -38,18 +35,12 @@ class AppleMusicDownloader:
         interface: AppleMusicInterface,
         base_downloader: AppleMusicBaseDownloader,
         song_downloader: AppleMusicSongDownloader,
-        music_video_downloader: AppleMusicMusicVideoDownloader,
-        uploaded_video_downloader: AppleMusicUploadedVideoDownloader,
-        skip_music_videos: bool = False,
         skip_processing: bool = False,
         flat_filter: typing.Callable = None,
     ):
         self.interface = interface
         self.base_downloader = base_downloader
         self.song_downloader = song_downloader
-        self.music_video_downloader = music_video_downloader
-        self.uploaded_video_downloader = uploaded_video_downloader
-        self.skip_music_videos = skip_music_videos
         self.skip_processing = skip_processing
         self.flat_filter = flat_filter
 
@@ -93,23 +84,6 @@ class AppleMusicDownloader:
                 download_item = await self.song_downloader.get_download_item(
                     media_metadata,
                     playlist_metadata,
-                )
-
-            if media_metadata["type"] in MUSIC_VIDEO_MEDIA_TYPE:
-                if not self.music_video_downloader:
-                    raise UnsupportedMediaType(media_metadata["type"])
-
-                download_item = await self.music_video_downloader.get_download_item(
-                    media_metadata,
-                    playlist_metadata,
-                )
-
-            if media_metadata["type"] in UPLOADED_VIDEO_MEDIA_TYPE:
-                if not self.uploaded_video_downloader:
-                    raise UnsupportedMediaType(media_metadata["type"])
-
-                download_item = await self.uploaded_video_downloader.get_download_item(
-                    media_metadata,
                 )
         except Exception as e:
             download_item = DownloadItem(
@@ -177,8 +151,8 @@ class AppleMusicDownloader:
                     value=["views", "top-songs"],
                 ),
                 Choice(
-                    name="Music Videos",
-                    value=["relationships", "music-videos"],
+                    name="Top Songs",
+                    value=["views", "top-songs"],
                 ),
             ],
             validate=lambda result: artist_metadata.get(result[0], {})
@@ -208,8 +182,8 @@ class AppleMusicDownloader:
             return await self.get_artist_albums_download_items(selected_tracks)
         elif media_type_key == "top-songs":
             return await self.get_artist_songs_download_items(selected_tracks)
-        elif media_type_key == "music-videos":
-            return await self.get_artist_music_videos_download_items(selected_tracks)
+        elif media_type_key == "top-songs":
+            return await self.get_artist_songs_download_items(selected_tracks)
 
     async def get_artist_albums_download_items(
         self,
@@ -252,42 +226,6 @@ class AppleMusicDownloader:
 
         for track_result in track_results:
             download_items.extend(track_result)
-
-        return download_items
-
-    async def get_artist_music_videos_download_items(
-        self,
-        music_videos_metadata: list[dict],
-    ) -> list[DownloadItem]:
-        choices = [
-            Choice(
-                name=" | ".join(
-                    [
-                        self.millis_to_min_sec(
-                            music_video["attributes"]["durationInMillis"]
-                        ),
-                        f'{music_video["attributes"].get("contentRating", "None").title():<8}',
-                        music_video["attributes"]["name"],
-                    ],
-                ),
-                value=music_video,
-            )
-            for music_video in music_videos_metadata
-            if music_video.get("attributes")
-        ]
-        selected = await inquirer.select(
-            message="Select which music videos to download: (Duration | Rating | Title)",
-            choices=choices,
-            multiselect=True,
-        ).execute_async()
-
-        music_video_tasks = [
-            self.get_single_download_item(
-                music_video_metadata,
-            )
-            for music_video_metadata in selected
-        ]
-        download_items = await safe_gather(*music_video_tasks)
 
         return download_items
 
@@ -357,9 +295,14 @@ class AppleMusicDownloader:
         download_items = []
 
         if url_type in ARTIST_MEDIA_TYPE:
-            artist_response = await self.interface.apple_music_api.get_artist(
-                id,
-            )
+            try:
+                artist_response = await self.interface.apple_music_api.get_artist(
+                    id,
+                )
+            except ApiError as e:
+                if e.status_code == 404:
+                    return None
+                raise e
 
             if artist_response is None:
                 return None
@@ -369,7 +312,12 @@ class AppleMusicDownloader:
             )
 
         if url_type in SONG_MEDIA_TYPE:
-            song_respose = await self.interface.apple_music_api.get_song(id)
+            try:
+                song_respose = await self.interface.apple_music_api.get_song(id)
+            except ApiError as e:
+                if e.status_code == 404:
+                    return None
+                raise e
 
             if song_respose is None:
                 return None
@@ -379,12 +327,17 @@ class AppleMusicDownloader:
             )
 
         if url_type in ALBUM_MEDIA_TYPE:
-            if is_library:
-                album_response = await self.interface.apple_music_api.get_library_album(
-                    id
-                )
-            else:
-                album_response = await self.interface.apple_music_api.get_album(id)
+            try:
+                if is_library:
+                    album_response = (
+                        await self.interface.apple_music_api.get_library_album(id)
+                    )
+                else:
+                    album_response = await self.interface.apple_music_api.get_album(id)
+            except ApiError as e:
+                if e.status_code == 404:
+                    return None
+                raise e
 
             if album_response is None:
                 return None
@@ -394,42 +347,25 @@ class AppleMusicDownloader:
             )
 
         if url_type in PLAYLIST_MEDIA_TYPE:
-            if is_library:
-                playlist_response = (
-                    await self.interface.apple_music_api.get_library_playlist(id)
-                )
-            else:
-                playlist_response = await self.interface.apple_music_api.get_playlist(
-                    id
-                )
+            try:
+                if is_library:
+                    playlist_response = (
+                        await self.interface.apple_music_api.get_library_playlist(id)
+                    )
+                else:
+                    playlist_response = (
+                        await self.interface.apple_music_api.get_playlist(id)
+                    )
+            except ApiError as e:
+                if e.status_code == 404:
+                    return None
+                raise e
 
             if playlist_response is None:
                 return None
 
             download_items = await self.get_collection_download_items(
                 playlist_response["data"][0],
-            )
-
-        if url_type in MUSIC_VIDEO_MEDIA_TYPE:
-            music_video_response = await self.interface.apple_music_api.get_music_video(
-                id
-            )
-
-            if music_video_response is None:
-                return None
-
-            download_items.append(
-                await self.get_single_download_item(music_video_response["data"][0])
-            )
-
-        if url_type in UPLOADED_VIDEO_MEDIA_TYPE:
-            uploaded_video = await self.interface.apple_music_api.get_uploaded_video(id)
-
-            if uploaded_video is None:
-                return None
-
-            download_items.append(
-                await self.get_single_download_item(uploaded_video["data"][0])
             )
 
         return download_items
@@ -476,62 +412,29 @@ class AppleMusicDownloader:
         ):
             raise MediaFileExists(download_item.final_path)
 
-        if download_item.media_metadata["type"] in {
-            *SONG_MEDIA_TYPE,
-            *MUSIC_VIDEO_MEDIA_TYPE,
-        }:
-            if (
-                not self.base_downloader.use_wrapper
-                or download_item.media_metadata["type"] in MUSIC_VIDEO_MEDIA_TYPE
-                or self.song_downloader.codec.is_legacy()
-            ):
-                if (
-                    self.base_downloader.remux_mode == RemuxMode.FFMPEG
-                    and not self.base_downloader.full_ffmpeg_path
-                ):
-                    raise ExecutableNotFound("ffmpeg")
+        if (
+            self.base_downloader.download_mode == DownloadMode.NM3U8DLRE
+            and not self.base_downloader.full_nm3u8dlre_path
+        ):
+            raise ExecutableNotFound("N_m3u8DL-RE")
 
-                if (
-                    self.base_downloader.remux_mode == RemuxMode.MP4BOX
-                    and not self.base_downloader.full_mp4box_path
-                ):
-                    raise ExecutableNotFound("MP4Box")
-
-                if (
-                    download_item.media_metadata["type"] in MUSIC_VIDEO_MEDIA_TYPE
-                    or self.base_downloader.remux_mode == RemuxMode.MP4BOX
-                ) and not self.base_downloader.full_mp4decrypt_path:
-                    raise ExecutableNotFound("mp4decrypt")
-
-            if (
-                self.base_downloader.download_mode == DownloadMode.NM3U8DLRE
-                and not self.base_downloader.full_nm3u8dlre_path
-            ):
-                raise ExecutableNotFound("N_m3u8DL-RE")
-
-            if (
-                not download_item.stream_info
-                or not download_item.stream_info.audio_track
-                or not download_item.stream_info.audio_track.stream_url
-                or (
-                    (
-                        not download_item.decryption_key
-                        or not download_item.decryption_key.audio_track
-                        or not download_item.decryption_key.audio_track.key
-                    )
-                    and not self.base_downloader.use_wrapper
+        if (
+            not download_item.stream_info
+            or not download_item.stream_info.audio_track
+            or not download_item.stream_info.audio_track.stream_url
+            or (
+                (
+                    not download_item.decryption_key
+                    or not download_item.decryption_key.audio_track
+                    or not download_item.decryption_key.audio_track.key
                 )
-            ):
-                raise FormatNotAvailable(download_item.media_metadata["id"])
+                and not self.base_downloader.use_wrapper
+            )
+        ):
+            raise FormatNotAvailable(download_item.media_metadata["id"])
 
         if download_item.media_metadata["type"] in SONG_MEDIA_TYPE:
             await self.song_downloader.download(download_item)
-
-        if download_item.media_metadata["type"] in MUSIC_VIDEO_MEDIA_TYPE:
-            await self.music_video_downloader.download(download_item)
-
-        if download_item.media_metadata["type"] in UPLOADED_VIDEO_MEDIA_TYPE:
-            await self.uploaded_video_downloader.download(download_item)
 
     async def _initial_processing(
         self,
