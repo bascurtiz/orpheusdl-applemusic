@@ -23,7 +23,7 @@ This module enables downloading music from Apple Music using OrpheusDL. It bridg
 You need an active Apple Music subscription to download content.
 
 ### 3. FFmpeg
-**FFmpeg is the only binary requirement** for all formats (AAC, ALAC, and Atmos). The decryption functionality is now built-in, so external decryption agents (like amdecrypt or Docker) and additional binaries (like mp4decrypt) are no longer required.
+**FFmpeg is the only binary requirement** for all formats (AAC, ALAC, and Atmos). The decryption functionality is now built-in, so only [Docker](https://www.docker.com/products/docker-desktop/) & [wrapper](https://github.com/WorldObservationLog/wrapper) are required for Dolby Atmos / ALAC.
 
 You can provide FFmpeg in any of these ways:
 - Place the `ffmpeg` binary (or `ffmpeg.exe` on Windows) in the OrpheusDL folder (next to `orpheus.py`) — the module will find it automatically
