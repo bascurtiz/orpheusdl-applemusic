@@ -11,8 +11,27 @@ ARTIST_MEDIA_TYPE = {"artist", "artists", "library-artists"}
 UPLOADED_VIDEO_MEDIA_TYPE = {"post", "uploaded-videos"}
 PLAYLIST_MEDIA_TYPE = {"playlist", "playlists", "library-playlists"}
 
+ARTIST_AUTO_SELECT_KEY_MAP = {
+    "main-albums": ("views", "full-albums"),
+    "compilation-albums": ("views", "compilation-albums"),
+    "live-albums": ("views", "live-albums"),
+    "singles-eps": ("views", "singles"),
+    "all-albums": ("relationships", "albums"),
+    "top-songs": ("views", "top-songs"),
+    "music-videos": ("relationships", "music-videos"),
+}
+ARTIST_AUTO_SELECT_STR_MAP = {
+    "main-albums": "Main Albums",
+    "compilation-albums": "Compilation Albums",
+    "live-albums": "Live Albums",
+    "singles-eps": "Singles & EPs",
+    "all-albums": "All Albums",
+    "top-songs": "Top Songs",
+    "music-videos": "Music Videos",
+}
+
 VALID_URL_PATTERN = re.compile(
-    r"https://music\.apple\.com"
+    r"https://(?:classical\.)?music\.apple\.com"
     r"(?:"
     r"/(?P<storefront>[a-z]{2})"
     r"/(?P<type>artist|album|playlist|song|music-video|post)"

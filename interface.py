@@ -123,25 +123,33 @@ def _lazy_import_gamdl():
             AppleMusicDownloader,
             AppleMusicSongDownloader,
         )
-        from gamdl.downloader.downloader_song import SongCodec as GamdlSongCodec
         from gamdl.interface import (
             AppleMusicInterface,
             AppleMusicSongInterface,
+        )
+        from gamdl.interface.enums import (
+            SongCodec as GamdlSongCodec,
             SyncedLyricsFormat
         )
-        from gamdl.downloader.enums import DownloadMode as GamdlDownloadMode, RemuxMode as GamdlRemuxMode
+        from gamdl.downloader.enums import (
+            ArtistAutoSelect,
+            DownloadMode as GamdlDownloadMode,
+            RemuxMode as GamdlRemuxMode
+        )
 
         globals()['AppleMusicApi'] = AppleMusicApi
         globals()['ItunesApi'] = ItunesApi
         globals()['GamdlSongCodec'] = GamdlSongCodec
         globals()['GamdlRemuxMode'] = GamdlRemuxMode
         globals()['GamdlDownloadMode'] = GamdlDownloadMode
+        globals()['ArtistAutoSelect'] = ArtistAutoSelect
         globals()['AppleMusicDownloader'] = AppleMusicDownloader
         globals()['AppleMusicBaseDownloader'] = AppleMusicBaseDownloader
         globals()['AppleMusicSongDownloader'] = AppleMusicSongDownloader
         globals()['AppleMusicInterface'] = AppleMusicInterface
         globals()['AppleMusicSongInterface'] = AppleMusicSongInterface
         globals()['SyncedLyricsFormat'] = SyncedLyricsFormat
+        from gamdl.interface.constants import LEGACY_SONG_CODECS
         globals()['LEGACY_SONG_CODECS'] = LEGACY_SONG_CODECS
 
         class OrpheusAppleMusicSongInterface(AppleMusicSongInterface):
@@ -149,7 +157,7 @@ def _lazy_import_gamdl():
                 super().__init__(interface)
                 self.quality_tier = quality_tier
 
-            def _get_playlist_from_codec(self, m3u8_data: dict, codec: 'SongCodec') -> dict | None:
+            def _get_playlist_from_codec(self, m3u8_data: dict, codec: 'GamdlSongCodec') -> dict | None:
                 from gamdl.interface.constants import SONG_CODEC_REGEX_MAP
                 import re
                 
@@ -646,7 +654,7 @@ class ModuleInterface:
         if not needs_reinit and self.gamdl_downloader:
             if self.gamdl_base_downloader.use_wrapper != requested_wrapper:
                 needs_reinit = True
-            elif hasattr(self.gamdl_song_downloader, 'codec') and self.gamdl_song_downloader.codec != requested_codec:
+            elif hasattr(self.gamdl_song_downloader, 'codec_priority') and self.gamdl_song_downloader.codec_priority != [requested_codec]:
                 needs_reinit = True
             elif self.song_codec != requested_codec: # Also check module-level cached codec
                 needs_reinit = True
@@ -681,7 +689,7 @@ class ModuleInterface:
                 self.gamdl_song_downloader = AppleMusicSongDownloader(
                     base_downloader=self.gamdl_base_downloader,
                     interface=self.gamdl_song_interface,
-                    codec=requested_codec
+                    codec_priority=[requested_codec]
                 )
                 
                 # Setup main gamdl downloader
@@ -689,6 +697,7 @@ class ModuleInterface:
                     interface=self.gamdl_interface,
                     base_downloader=self.gamdl_base_downloader,
                     song_downloader=self.gamdl_song_downloader,
+                    artist_auto_select=None # Can be extended later if we add a setting
                 )
                 
                 # Alias for backward compatibility in some methods
