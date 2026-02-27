@@ -87,7 +87,7 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
             if download_item.stream_info:
                 break
 
-        if download_item.stream_info.audio_track.legacy:
+        if download_item.stream_info and download_item.stream_info.audio_track and download_item.stream_info.audio_track.legacy:
             download_item.decryption_key = (
                 await self.interface.get_decryption_key_legacy(
                     download_item.stream_info,
@@ -97,6 +97,7 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
         elif (
             not self.use_wrapper
             and download_item.stream_info
+            and download_item.stream_info.audio_track
             and download_item.stream_info.audio_track.widevine_pssh
         ):
             download_item.decryption_key = await self.interface.get_decryption_key(
@@ -221,6 +222,9 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
             "encrypted",
             ".m4a",
         )
+        if not download_item.stream_info or not download_item.stream_info.audio_track:
+            raise ValueError("Stream info or audio track is missing")
+
         await self.download_stream(
             download_item.stream_info.audio_track.stream_url,
             encrypted_path,
@@ -230,9 +234,9 @@ class AppleMusicSongDownloader(AppleMusicBaseDownloader):
             encrypted_path,
             download_item.staged_path,
             download_item.decryption_key,
-            download_item.stream_info.audio_track.legacy,
+            download_item.stream_info.audio_track.legacy if download_item.stream_info and download_item.stream_info.audio_track else False,
             download_item.media_metadata["id"],
-            download_item.stream_info.audio_track.fairplay_key,
+            download_item.stream_info.audio_track.fairplay_key if download_item.stream_info and download_item.stream_info.audio_track else None,
         )
 
         cover_bytes = (

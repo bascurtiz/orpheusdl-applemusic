@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import re
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -153,23 +154,44 @@ def _lazy_import_gamdl():
         globals()['LEGACY_SONG_CODECS'] = LEGACY_SONG_CODECS
 
         class OrpheusAppleMusicSongInterface(AppleMusicSongInterface):
-            def __init__(self, interface: AppleMusicInterface, quality_tier: QualityEnum = None):
+            def __init__(self, interface: AppleMusicInterface, quality_tier: QualityEnum = None, debug: bool = False):
                 super().__init__(interface)
                 self.quality_tier = quality_tier
+                self._debug = debug
 
             def _get_playlist_from_codec(self, m3u8_data: dict, codec: 'GamdlSongCodec') -> dict | None:
                 from gamdl.interface.constants import SONG_CODEC_REGEX_MAP
                 import re
                 
-                matching_playlists = [
-                    playlist
-                    for playlist in m3u8_data["playlists"]
-                    if re.fullmatch(
-                        SONG_CODEC_REGEX_MAP[codec.value], playlist["stream_info"]["audio"]
-                    )
-                ]
+                # Check for Atmos first with a more inclusive logic if it's the requested codec
+                if codec.value == 'atmos':
+                    # First try standard "atmos" regex
+                    matching_playlists = [
+                        playlist for playlist in m3u8_data["playlists"]
+                        if re.fullmatch(SONG_CODEC_REGEX_MAP['atmos'], playlist["stream_info"]["audio"])
+                    ]
+                    
+                    # If no "atmos" found, try "ac3" as a fallback for Atmos/Surround
+                    if not matching_playlists:
+                        if self._debug:
+                            print(f"[Apple Music Debug] No 'audio-atmos' found. Trying 'audio-ac3' as fallback for Atmos/Surround.")
+                        matching_playlists = [
+                            playlist for playlist in m3u8_data["playlists"]
+                            if re.fullmatch(SONG_CODEC_REGEX_MAP['ac3'], playlist["stream_info"]["audio"])
+                        ]
+                else:
+                    matching_playlists = [
+                        playlist
+                        for playlist in m3u8_data["playlists"]
+                        if re.fullmatch(
+                            SONG_CODEC_REGEX_MAP[codec.value], playlist["stream_info"]["audio"]
+                        )
+                    ]
 
                 if not matching_playlists:
+                    if self._debug:
+                        flavors = [p["stream_info"]["audio"] for p in m3u8_data["playlists"]]
+                        print(f"[Apple Music Debug] No matching playlist for codec '{codec.value}'. Available flavors: {flavors}")
                     return None
 
                 # Filter for LOSSLESS (Standard Lossless) to avoid HI-RES (96k+)
@@ -316,6 +338,7 @@ class ModuleInterface:
             hasattr(module_controller, 'settings') and 
             module_controller.settings.get('global', {}).get('advanced', {}).get('debug_mode', False)
         )
+        self.quality_tier = None
         
         # Lock for synchronizing async operations across threads
         self._lock = threading.Lock()
@@ -459,7 +482,7 @@ class ModuleInterface:
 
         target_sf = kwargs.pop('storefront', None)
         
-        for attempt in range(3):
+        for attempt in range(4): # Increased to 4 attempts to allow for 3 retries with backoff
             # 1. Ensure thread is alive and loop is valid
             if not self.loop_thread or not self.loop_thread.is_alive() or not self.loop or self.loop.is_closed():
                 if self._debug and attempt > 0:
@@ -482,7 +505,7 @@ class ModuleInterface:
                     # Update storefront if different
                     if am_api and sf and getattr(am_api, 'storefront', None) != sf:
                         am_api.storefront = sf
-                    if it_api and sf and getattr(it_api, 'storefront', None) != sf:
+                    if it_api and sf and getattr(am_api, 'storefront', None) != sf:
                         it_api.storefront = sf
                     
                     # Run the target function
@@ -503,12 +526,50 @@ class ModuleInterface:
                     print(f"[Apple Music Debug] Scheduling coroutine on loop {id(self.loop)} (Thread: {self.loop_thread.name if self.loop_thread else 'None'})")
                 
                 future = asyncio.run_coroutine_threadsafe(wrapper(), self.loop)
-                # Significantly increase timeout to 600s (10 mins) to support high-res ALAC downloads
-                result = future.result(timeout=600) 
+                # Significantly increase timeout to 1200s (20 mins) to support extremely heavy operations if needed
+                result = future.result(timeout=1200) 
                 
                 # 3. Handle propagated exceptions
                 if isinstance(result, Exception):
-                    if "closed" in str(result).lower() and isinstance(result, RuntimeError):
+                    # Handle Apple Music API Rate Limits (429)
+                    is_rate_limit = False
+                    # Check specifically for status code 429 if it's an ApiError (from gamdl)
+                    if 'ApiError' in type(result).__name__ and getattr(result, 'status_code', None) == 429:
+                        is_rate_limit = True
+                    # Fallback check for other error types that might indicate rate limiting
+                    elif 'TooManyRequests' in type(result).__name__:
+                        is_rate_limit = True
+
+                    if is_rate_limit and attempt < 3:
+                        backoff_times = [2, 5, 10]
+                        wait_time = backoff_times[attempt]
+                        if self._debug:
+                            print(f"[Apple Music Warning] Rate limit (429) detected. Retrying in {wait_time}s... (Attempt {attempt+1}/4)")
+                        time.sleep(wait_time)
+                        continue
+
+                    result_str = str(result)
+                    if "Multiple cookies exist with name=" in result_str and attempt < 3:
+                        cookie_name = result_str.split("name=")[-1].strip().strip("'\"")
+                        if self._debug:
+                            print(f"[Apple Music Warning] Cookie conflict detected for '{cookie_name}'. Attempting self-healing...")
+                        try:
+                            am_api = getattr(self, 'apple_music_api', None)
+                            if am_api and hasattr(am_api, 'client') and hasattr(am_api.client, 'cookies'):
+                                jar = am_api.client.cookies.jar
+                                cookies_to_remove = [c for c in jar if c.name == cookie_name]
+                                for c in cookies_to_remove:
+                                    try:
+                                        jar.clear(c.domain, c.path, c.name)
+                                    except: pass
+                                if self._debug:
+                                    print(f"[Apple Music Debug] Cleared {len(cookies_to_remove)} conflicting '{cookie_name}' cookies.")
+                        except Exception as ce:
+                            if self._debug:
+                                print(f"[Apple Music Error] Failed to clear conflicting cookies: {ce}")
+                        continue
+
+                    if "closed" in result_str.lower() and isinstance(result, RuntimeError):
                         if self._debug:
                             print(f"[Apple Music Warning] background thread returned closed loop error: {result}")
                         self.loop = None
@@ -533,11 +594,11 @@ class ModuleInterface:
                         self.loop = None
                         if hasattr(self, 'apple_music_api'): self.apple_music_api = None
                 
-                if attempt == 2: # Last attempt
+                if attempt == 3: # Last attempt (4 total)
                     raise e
                 continue
         
-        raise RuntimeError("Apple Music: Failed to execute async operation after 3 attempts.")
+        raise RuntimeError("Apple Music: Failed to execute async operation after 4 attempts (including rate limit retries).")
 
     def _clear_gamdl_caches(self):
         """Clear alru_cache in gamdl interfaces to prevent loop-mismatch errors"""
@@ -683,7 +744,11 @@ class ModuleInterface:
                 # Setup gamdl interfaces
                 self.gamdl_interface = AppleMusicInterface(self.apple_music_api, self.itunes_api)
                 # Use our customized subclass to handle quality-aware ALAC selection
-                self.gamdl_song_interface = OrpheusAppleMusicSongInterface(self.gamdl_interface)
+                self.gamdl_song_interface = OrpheusAppleMusicSongInterface(
+                    self.gamdl_interface, 
+                    quality_tier=self.quality_tier,
+                    debug=self._debug
+                )
                 
                 # Setup sub-downloaders
                 self.gamdl_song_downloader = AppleMusicSongDownloader(
@@ -1299,9 +1364,9 @@ class ModuleInterface:
 
             # --- Supplemental Metadata Fetch (if IDs or lyrics flags missing) ---
             # ONLY do this if explicitly allowed (e.g. during download) or if we have NO IDs at all
-            if allow_refetch and (not album_id_from_rels or not artist_id_from_rels or 'hasLyrics' not in attrs):
+            if allow_refetch and (not album_id_from_rels or not artist_id_from_rels or 'hasLyrics' not in attrs or 'audioTraits' not in attrs):
                 if self._debug:
-                    print(f"[Apple Music Debug] Incomplete metadata (Album={album_id_from_rels}, Artist={artist_id_from_rels}, hasLyrics={'hasLyrics' in attrs}) for track {track_id}. Fetching full song data.")
+                    print(f"[Apple Music Debug] Incomplete metadata (Album={album_id_from_rels}, Artist={artist_id_from_rels}, hasLyrics={'hasLyrics' in attrs}, audioTraits={'audioTraits' in attrs}) for track {track_id}. Fetching full song data.")
                 full_track_data = self._run_async(lambda s: s.apple_music_api.get_song(track_id), storefront=country)
                 
                 if full_track_data and 'data' in full_track_data and len(full_track_data['data']) > 0:
@@ -1376,12 +1441,15 @@ class ModuleInterface:
                     display_bitrate = 768
                     display_bit_depth = 16
                     display_sample_rate = 48000
-                elif effective_codec == GamdlSongCodec.ALAC and supports_alac:
+                elif (effective_codec == GamdlSongCodec.ALAC or (effective_codec == GamdlSongCodec.ATMOS and not supports_atmos)) and supports_alac:
                     display_codec = CodecEnum.ALAC
                     display_bitrate = 0
                     
+                    if effective_codec == GamdlSongCodec.ATMOS and self._debug:
+                        print(f"[Apple Music Debug] Display fallback: Downgrading codec to ALAC as ATMOS is unavailable (Traits: {traits})")
+
                     # Try to get precise info from manifest
-                    precise_info = self._get_precise_alac_info(attrs, effective_codec, quality_tier=quality_tier)
+                    precise_info = self._get_precise_alac_info(attrs, GamdlSongCodec.ALAC, quality_tier=quality_tier)
                     if precise_info:
                         display_bit_depth = precise_info.get('bit_depth', 24)
                         display_sample_rate = precise_info.get('sample_rate', 48000)
@@ -1564,9 +1632,14 @@ class ModuleInterface:
                     print(f"[Apple Music Debug] Downgrading codec to AAC as ALAC is unavailable for this track (Traits: {traits})")
                 local_effective_codec = GamdlSongCodec.AAC_LEGACY
             elif local_effective_codec == GamdlSongCodec.ATMOS and not ('atmos' in traits or 'spatial' in traits):
-                if self._debug:
-                    print(f"[Apple Music Debug] Downgrading codec to AAC as ATMOS is unavailable for this track (Traits: {traits})")
-                local_effective_codec = GamdlSongCodec.AAC_LEGACY
+                if 'lossless' in traits or 'hi-res-lossless' in traits:
+                    if self._debug:
+                        print(f"[Apple Music Debug] Downgrading codec to ALAC as ATMOS is unavailable for this track (Traits: {traits})")
+                    local_effective_codec = GamdlSongCodec.ALAC
+                else:
+                    if self._debug:
+                        print(f"[Apple Music Debug] Downgrading codec to AAC as ATMOS and ALAC are unavailable for this track (Traits: {traits})")
+                    local_effective_codec = GamdlSongCodec.AAC_LEGACY
 
             # 3. Ensure gamdl components are initialized, passing overrides if present
             self._initialize_gamdl_components(song_codec=local_effective_codec, use_wrapper=override_use_wrapper)
