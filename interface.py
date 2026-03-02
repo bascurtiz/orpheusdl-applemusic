@@ -1687,6 +1687,16 @@ class ModuleInterface:
             except Exception as e:
                 if self._debug:
                     print(f"[Apple Music Error] Failed to get download item: {type(e).__name__}: {e}")
+                
+                # Check for ALAC/Atmos failure when use_wrapper is disabled (API Error 200: -1002)
+                err_str = str(e)
+                if local_effective_codec in (GamdlSongCodec.ALAC, GamdlSongCodec.ATMOS) and \
+                   ("API Error 200" in err_str and "-1002" in err_str):
+                    wrapper_enabled = override_use_wrapper if override_use_wrapper is not None else getattr(self.gamdl_base_downloader, 'use_wrapper', False)
+                    if not wrapper_enabled:
+                        codec_val = local_effective_codec.value if hasattr(local_effective_codec, 'value') else str(local_effective_codec)
+                        raise DownloadError(f"Apple Music: {codec_val.upper()} requires the 'Use Wrapper' setting to be enabled. Please enable it or select 'High' quality instead.")
+                        
                 raise DownloadError(f"Apple Music: Failed to prepare download - {type(e).__name__}: {e}") from e
             
             if download_item.error:
@@ -1709,7 +1719,7 @@ class ModuleInterface:
                 # Wrapper might be required but failed or unavailable
                 wrapper_enabled = override_use_wrapper if override_use_wrapper is not None else getattr(self.gamdl_base_downloader, 'use_wrapper', False)
                 if not wrapper_enabled:
-                    raise DownloadError(f"Apple Music: {requested_codec_val.upper()} requires the 'Use Wrapper' setting to be enabled.")
+                    raise DownloadError(f"Apple Music: {requested_codec_val.upper()} requires the 'Use Wrapper' setting to be enabled. Please enable it or select 'High' quality instead.")
                 else:
                     raise DownloadError(f"Apple Music: Could not obtain {requested_codec_val.upper()} stream. Please ensure your Docker/Wrapper container is running and correctly configured.")
 
@@ -1837,7 +1847,7 @@ class ModuleInterface:
                 if requested_codec_str in ['atmos', 'alac']:
                     wrapper_enabled = override_use_wrapper if override_use_wrapper is not None else getattr(self.gamdl_base_downloader, 'use_wrapper', False)
                     if not wrapper_enabled:
-                        final_msg = f"This {requested_codec_str.upper()} track requires the 'Use Wrapper' setting to be enabled in your Apple Music credentials."
+                        final_msg = f"This {requested_codec_str.upper()} track requires the 'Use Wrapper' setting to be enabled in your Apple Music credentials. Please enable it or select 'High' quality instead."
                     else:
                         final_msg = f"Could not connect to the local decryption service. Please ensure your Docker/Wrapper container on (127.0.0.1:10020) is started and running."
                         
