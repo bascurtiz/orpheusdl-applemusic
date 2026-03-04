@@ -42,17 +42,20 @@ You need to export your Apple Music cookies to authenticate.
 2. Export cookies using a browser extension like **Get cookies.txt LOCALLY**.
 3. Save as `cookies.txt` in the `/config` folder of OrpheusDL.
 
-## Installation
-
-See video tutorial (for Windows): https://www.youtube.com/watch?v=ejHePonY4e8 <br>
-See video tutorial (for macOS): https://www.youtube.com/watch?v=twrPwPjXVDw <br>
-
 ### macOS Users - Important SSL Setup!
 Before using this module, you **must** install SSL certificates:
 ```bash
 pip3 install --upgrade certifi
 ```
 And run the "Install Certificates.command" found in your Python application folder.
+
+## Installation
+1. Make sure [OrpheusDL](https://github.com/bascurtiz/OrpheusDL) is installed.
+2. Clone this repository (`git clone https://github.com/bascurtiz/orpheusdl-applemusic`) or download the ZIP file.
+3. Ensure all files from this repository are placed in the `modules/applemusic` folder.
+4. Run Orpheus to create settings.json:<br>
+   `python orpheus.py`<br>
+    <sub>*(use python3 on macOS)*</sub><br>
 
 ## Usage
 
