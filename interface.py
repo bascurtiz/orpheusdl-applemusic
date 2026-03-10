@@ -1057,22 +1057,28 @@ class ModuleInterface:
             language = self.settings.get('language', 'en-US')
 
             try:
+                # 1. Try Wrapper if enabled
                 if self.use_wrapper:
                     wrapper_account_url = self.settings.get('wrapper_account_url', "http://127.0.0.1:20020")
                     try:
-                        if getattr(self, '_wrapper_offline', False):
-                            raise Exception("Wrapper offline")
-                        
-                        self.apple_music_api = await AppleMusicApi.create_from_wrapper(
-                            wrapper_account_url=wrapper_account_url, language=language
-                        )
+                        if not getattr(self, '_wrapper_offline', False):
+                            self.apple_music_api = await AppleMusicApi.create_from_wrapper(
+                                wrapper_account_url=wrapper_account_url, language=language
+                            )
                     except Exception:
                         self._wrapper_offline = True
-                    
+                
+                # 2. If wrapper failed or is disabled, try cookies or guest
+                if not getattr(self, 'apple_music_api', None):
                     kwargs = {'language': language}
                     if cookies_path and cookies_path.exists():
                         kwargs['cookies_path'] = str(cookies_path)
-                        self.apple_music_api = await AppleMusicApi.create_from_netscape_cookies(**kwargs)
+                        try:
+                            self.apple_music_api = await AppleMusicApi.create_from_netscape_cookies(**kwargs)
+                        except Exception as ce:
+                            if self._debug:
+                                print(f"[Apple Music Debug] Cookie initialization failed: {ce}. Falling back to guest.")
+                            self.apple_music_api = await AppleMusicApi.create(**kwargs)
                     else:
                         self.apple_music_api = await AppleMusicApi.create(**kwargs)
                 
