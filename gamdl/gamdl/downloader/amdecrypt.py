@@ -158,15 +158,24 @@ def extract_song(input_path: str) -> SongInfo:
         elif box["type"] == "moov":
             song_info.moov_data = box["data"]
 
-    # Get default sample info from trex (inside moov)
-    default_sample_duration = 1024
-    default_sample_size = 0
-
     # Determine which track is the audio track
     audio_track_id = (
         _extract_audio_track_id(song_info.moov_data) if song_info.moov_data else 1
     )
     logger.debug(f"Audio track ID: {audio_track_id}")
+
+    # Get default sample info from trex (inside moov/mvex)
+    trex_defaults = (
+        _extract_trex_defaults(song_info.moov_data, audio_track_id)
+        if song_info.moov_data
+        else {"default_sample_duration": 1024, "default_sample_size": 0}
+    )
+    default_sample_duration = trex_defaults["default_sample_duration"]
+    default_sample_size = trex_defaults["default_sample_size"]
+    logger.debug(
+        f"Default sample duration: {default_sample_duration}, "
+        f"default sample size: {default_sample_size}"
+    )
 
     # Extract encryption scheme info from moov (sinf/schm + sinf/schi/tenc)
     if song_info.moov_data:
@@ -1486,6 +1495,37 @@ def _extract_encryption_info_per_stsd(moov_data: bytes) -> Optional[dict]:
         entry_offset += entry_size
 
     return encryption_info_per_desc if encryption_info_per_desc else None
+
+
+def _extract_trex_defaults(moov_data: bytes, track_id: int) -> dict:
+    """Extract default sample duration and size from trex box."""
+    trex_data = find_box(moov_data, ["mvex", "trex"])
+    if trex_data is None:
+        return {"default_sample_duration": 1024, "default_sample_size": 0}
+
+    # FullBox: version(1) + flags(3) + track_id(4)
+    version = trex_data[0]
+    flags = struct.unpack(">I", b"\x00" + trex_data[1:4])[0]
+    trex_track_id = struct.unpack(">I", trex_data[4:8])[0]
+
+    if trex_track_id != track_id:
+        return {"default_sample_duration": 1024, "default_sample_size": 0}
+
+    offset = 8  # version+flags(4) + track_id(4)
+    defaults = {"default_sample_duration": 1024, "default_sample_size": 0}
+
+    if flags & 0x01 and offset + 4 <= len(trex_data):  # default_sample_duration
+        defaults["default_sample_duration"] = struct.unpack(">I", trex_data[offset : offset + 4])[0]
+        offset += 4
+    if flags & 0x02 and offset + 4 <= len(trex_data):  # default_sample_size
+        defaults["default_sample_size"] = struct.unpack(">I", trex_data[offset : offset + 4])[0]
+
+    logger.debug(
+        f"trex defaults for track {track_id}: "
+        f"duration={defaults['default_sample_duration']}, "
+        f"size={defaults['default_sample_size']}"
+    )
+    return defaults
 
 
 def _extract_audio_track_id(moov_data: bytes) -> int:

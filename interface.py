@@ -282,7 +282,7 @@ from utils.models import (
     DownloadTypeEnum, QualityEnum,
     DownloadEnum as OrpheusDownloadEnum,
     ModuleInformation, ModuleModes, ManualEnum, Tags, CodecEnum,
-    TrackDownloadInfo
+    TrackDownloadInfo, ModuleController, OrpheusOptions
 )
 from utils.exceptions import AuthenticationError, DownloadError, TrackUnavailableError
 
@@ -322,6 +322,10 @@ def suppress_gamdl_debug():
         devnull.close()
         sys.stdout = original_stdout
 
+def _get_original_stdout():
+    """Helper to get the original stdout even if redirected"""
+    return getattr(threading.current_thread(), '_original_stdout', sys.stdout)
+
 class ModuleInterface:
     def __init__(self, module_controller: ModuleController):
         self.exception = module_controller.module_error
@@ -334,10 +338,7 @@ class ModuleInterface:
         self.is_authenticated = False  # Default to not authenticated
         self._using_rich_tagging = False  # Track when we're using gamdl's rich tagging to prevent OrpheusDL overwriting
         # Consolidate debug setting from module-specific and global settings
-        self._debug = settings.get('debug', False) or (
-            hasattr(module_controller, 'settings') and 
-            module_controller.settings.get('global', {}).get('advanced', {}).get('debug_mode', False)
-        )
+        self._debug = settings.get('debug', False) or module_controller.orpheus_options.debug_mode
         self.quality_tier = None
         
         # Lock for synchronizing async operations across threads
@@ -433,7 +434,7 @@ class ModuleInterface:
                 print(f"[Apple Music Debug] Starting background event loop thread...")
                 
             self._loop_ready.clear()
-            self.loop_thread = threading.Thread(target=self._run_loop, daemon=True)
+            self.loop_thread = threading.Thread(target=self._run_loop, daemon=True, name="AppleMusicLoop")
             self.loop_thread.start()
             # Wait up to 5 seconds for the loop to start
             if not self._loop_ready.wait(5):
@@ -459,6 +460,18 @@ class ModuleInterface:
                 print("[Apple Music Debug] Background loop thread exiting...")
             self._loop_ready.clear()
             # Don't close it here if we want it to persist even if run_forever returns (which it shouldn't)
+            pass
+
+    def _debug_print(self, msg):
+        """Helper to print debug messages even when stdout is redirected to devnull"""
+        if self._debug:
+            orig = _get_original_stdout()
+            try:
+                orig.write(f"{msg}\n")
+                orig.flush()
+            except:
+                # Fallback to standard print if write fails
+                print(msg)
 
     def _run_async(self, func, *args, **kwargs):
         """Run an async function or lambda in the internal event loop thread and return the result."""
@@ -526,8 +539,11 @@ class ModuleInterface:
                     print(f"[Apple Music Debug] Scheduling coroutine on loop {id(self.loop)} (Thread: {self.loop_thread.name if self.loop_thread else 'None'})")
                 
                 future = asyncio.run_coroutine_threadsafe(wrapper(), self.loop)
-                # Significantly increase timeout to 1200s (20 mins) to support extremely heavy operations if needed
+                if self._debug:
+                    print(f"[Apple Music Debug] Scheduled coroutine. Waiting for result (Timeout: 1200s)...")
                 result = future.result(timeout=1200) 
+                if self._debug:
+                    print(f"[Apple Music Debug] Coroutine finished with result type: {type(result).__name__}")
                 
                 # 3. Handle propagated exceptions
                 if isinstance(result, Exception):
@@ -956,6 +972,37 @@ class ModuleInterface:
                         extra_kwargs={'raw_result': item}
                     ))
             
+            if query_type == DownloadTypeEnum.playlist:
+                missing_additional = [t for t in search_results if not t.additional or not t.duration]
+                if missing_additional:
+                    pcounts = {}
+                    
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                        for pid, tc, dur in executor.map(self._fetch_am_playlist_meta, [t.result_id for t in missing_additional]):
+                            pcounts[pid] = {'tc': tc, 'dur': dur}
+                    
+                    for t in missing_additional:
+                        if t.result_id in pcounts:
+                            meta = pcounts[t.result_id]
+                            if not t.additional and meta.get('tc'):
+                                tc = meta['tc']
+                                t.additional = [f"1 track" if tc == 1 else f"{tc} tracks"]
+                            if not t.duration and meta.get('dur'):
+                                t.duration = meta['dur']
+            
+            elif query_type == DownloadTypeEnum.album:
+                missing_duration = [t for t in search_results if not t.duration]
+                if missing_duration:
+                    acounts = {}
+                    
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                        for aid, dur in executor.map(self._fetch_am_album_duration, [t.result_id for t in missing_duration]):
+                            if dur: acounts[aid] = dur
+                    
+                    for t in missing_duration:
+                        if t.result_id in acounts:
+                            t.duration = acounts[t.result_id]
+            
             return search_results
             
         except Exception as e:
@@ -1021,13 +1068,7 @@ class ModuleInterface:
                         )
                     except Exception:
                         self._wrapper_offline = True
-                        kwargs = {'language': language}
-                        if cookies_path and cookies_path.exists():
-                            kwargs['cookies_path'] = str(cookies_path)
-                            self.apple_music_api = await AppleMusicApi.create_from_netscape_cookies(**kwargs)
-                        else:
-                            self.apple_music_api = await AppleMusicApi.create(**kwargs)
-                else:
+                    
                     kwargs = {'language': language}
                     if cookies_path and cookies_path.exists():
                         kwargs['cookies_path'] = str(cookies_path)
@@ -1047,6 +1088,8 @@ class ModuleInterface:
             except Exception as e:
                 if self._debug:
                     print(f"[Apple Music Error] API Setup failed: {e}")
+                import traceback
+                traceback.print_exc()
                 raise
 
     def _check_and_reload_cookies(self):
@@ -1170,9 +1213,9 @@ class ModuleInterface:
 
     def get_track_info(self, track_id: str, quality_tier: QualityEnum, codec_options: CodecOptions, data: Optional[Dict[str, Any]] = None, **kwargs) -> Optional[TrackInfo]:
         if getattr(self, '_debug', False):
-            print(f"[{self.module_information.service_name} DEBUG] get_track_info called for track_id: {track_id}")
-            print(f"[{self.module_information.service_name} DEBUG] kwargs keys: {list(kwargs.keys())}")
-            print(f"[{self.module_information.service_name} DEBUG] country in kwargs: {kwargs.get('country')}")
+            print(f"[{module_information.service_name} DEBUG] get_track_info called for track_id: {track_id}")
+            print(f"[{module_information.service_name} DEBUG] kwargs keys: {list(kwargs.keys())}")
+            print(f"[{module_information.service_name} DEBUG] country in kwargs: {kwargs.get('country')}")
         
         # Re-evaluate settings from config to ensure we catch changes from the GUI
         self.song_codec = self._get_gamdl_codec(self.settings.get('codec', 'aac'))
@@ -1230,7 +1273,7 @@ class ModuleInterface:
                 # Continue with original track_id if parsing fails, let API handle error
             
         if getattr(self, '_debug', False):
-            print(f"[{self.module_information.service_name} DEBUG] kwargs keys: {list(kwargs.keys())}")
+            print(f"[{module_information.service_name} DEBUG] kwargs keys: {list(kwargs.keys())}")
             
         self._ensure_credentials()
 
@@ -1238,7 +1281,7 @@ class ModuleInterface:
             # Ensure we have a valid country code for _set_storefront
             country = kwargs.get('country') or (data.get('country') if data else None)
             if getattr(self, '_debug', False):
-                print(f"[{self.module_information.service_name} DEBUG] Extracted country: {country}")
+                print(f"[{module_information.service_name} DEBUG] Extracted country: {country}")
             self._set_storefront(country)
 
             # Try to extract country if URL is provided
@@ -1422,7 +1465,7 @@ class ModuleInterface:
             effective_codec = self._quality_to_codec(quality_tier) if quality_tier else (self._get_gamdl_codec(override_song_codec) if override_song_codec else self.song_codec)
             
             if self._debug:
-                print(f"[{self.module_information.service_name} DEBUG] info effective_codec: {effective_codec.name if hasattr(effective_codec, 'name') else str(effective_codec)}")
+                print(f"[{module_information.service_name} DEBUG] info effective_codec: {effective_codec.name if hasattr(effective_codec, 'name') else str(effective_codec)}")
             
             display_codec = CodecEnum.AAC
             display_bitrate = 256
@@ -2076,7 +2119,7 @@ class ModuleInterface:
                 if formatted_traits:
                     additional_parts.append(formatted_traits)
                     
-                additional = " · ".join(additional_parts)
+                additional = "  ".join(additional_parts)
                 
                 return {
                     'id': album_item.get('id', ''),
@@ -2085,6 +2128,7 @@ class ModuleInterface:
                     'release_year': release_year,
                     'cover_url': item_cover_url,
                     'additional': additional,
+                    'explicit': a_attrs.get('contentRating') == 'explicit',
                     # Pass full API data so get_album_info doesn't need to refetch
                     'attributes': a_attrs,
                     'relationships': album_item.get('relationships'),
@@ -2143,6 +2187,18 @@ class ModuleInterface:
                     if isinstance(processed, dict) and category_prefix:
                         processed['name'] = category_prefix + processed['name']
                     albums_out.append(processed)
+        
+        # Batch fetch missing durations for albums
+        albums_to_fetch = [idx for idx, t in enumerate(albums_out) if isinstance(t, dict) and not t.get('duration')]
+        if albums_to_fetch:
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                fetch_ids = [albums_out[idx]['id'] for idx in albums_to_fetch]
+                for aid, dur in executor.map(self._fetch_am_album_duration, fetch_ids):
+                    if dur:
+                        for idx in albums_to_fetch:
+                            if albums_out[idx]['id'] == aid:
+                                albums_out[idx]['duration'] = dur
 
         return ArtistInfo(
             name=artist_name,
@@ -2152,6 +2208,41 @@ class ModuleInterface:
             tracks=tracks_out,
             track_extra_kwargs={**kwargs, 'country': country}
         )
+
+    def _fetch_am_playlist_meta(self, pid):
+        try:
+            p_data = self._run_async(lambda s: s.apple_music_api.get_playlist(pid))
+            if p_data and 'data' in p_data and len(p_data['data']) > 0:
+                attrs = p_data['data'][0].get('attributes', {})
+                tc = attrs.get('trackCount')
+                
+                rel_tracks = (p_data['data'][0].get('relationships') or {}).get('tracks', {}).get('data', [])
+                total_duration = None
+                if rel_tracks:
+                    sum_dur = sum(t.get('attributes', {}).get('durationInMillis', 0) for t in rel_tracks if isinstance(t.get('attributes'), dict))
+                    if sum_dur > 0:
+                        total_duration = sum_dur // 1000
+                
+                if tc is not None and tc > 0:
+                    return pid, tc, total_duration
+                    
+                # Fallback to relationship length
+                if rel_tracks:
+                    return pid, len(rel_tracks), total_duration
+        except: pass
+        return pid, None, None
+
+    def _fetch_am_album_duration(self, aid, storefront=None):
+        try:
+            a_data = self._run_async(lambda s: s.apple_music_api.get_album(aid), storefront=storefront)
+            if a_data and 'data' in a_data and len(a_data['data']) > 0:
+                rel_tracks = (a_data['data'][0].get('relationships') or {}).get('tracks', {}).get('data', [])
+                if rel_tracks:
+                    sum_dur = sum(t.get('attributes', {}).get('durationInMillis', 0) for t in rel_tracks if isinstance(t.get('attributes'), dict))
+                    if sum_dur > 0:
+                        return aid, sum_dur // 1000
+        except: pass
+        return aid, None
 
     def _localize_url(self, url):
         """Replace the country code in an Apple Music URL with the account storefront."""
@@ -2166,8 +2257,17 @@ class ModuleInterface:
         """Build a full cover URL from a template"""
         if not artwork_template:
             return None
-        # Replace template with high resolution
-        return artwork_template.replace('{w}x{h}bb.jpg', '1400x1400bb.jpg')
+        
+        try:
+            # Get resolution from global settings, default to 1400
+            res = self.module_controller.orpheus_options.default_cover_options.resolution
+        except Exception as e:
+            if getattr(self, '_debug', False):
+                print(f"[Apple Music Error] Failed to get resolution from settings: {e}. Falling back to 1400.")
+            res = 1400
+            
+        # Replace template markers with resolution
+        return artwork_template.replace('{w}', str(res)).replace('{h}', str(res))
 
     def _format_audio_traits(self, attrs, item_type=None):
         """Format audio traits according to GUI display rules"""
@@ -2199,7 +2299,7 @@ class ModuleInterface:
             # Add Atmos trait if detected, always first
             traits.insert(0, '◗◖ ATMOS')
             
-        return " · ".join(traits)
+        return "  ".join(traits)
 
     def _get_precise_alac_info(self, attrs, codec, quality_tier: QualityEnum = None):
         """Fetch HLS manifest and parse audio group ID for exact bit depth and sample rate"""

@@ -1,6 +1,6 @@
 # Apple Music Module for OrpheusDL
 
-This module enables downloading music from Apple Music using OrpheusDL. It bridges the functionality of [gamdl](https://github.com/glomatico/gamdl) (v2.9.1) to work within the OrpheusDL framework.
+This module enables downloading music from Apple Music using OrpheusDL. It bridges the functionality of [gamdl](https://github.com/glomatico/gamdl) to work within the OrpheusDL framework.
 
 ## Features
 
