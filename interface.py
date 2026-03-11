@@ -2125,7 +2125,7 @@ class ModuleInterface:
                 if formatted_traits:
                     additional_parts.append(formatted_traits)
                     
-                additional = "  ".join(additional_parts)
+                additional = " / ".join(additional_parts)
                 
                 return {
                     'id': album_item.get('id', ''),
@@ -2305,7 +2305,7 @@ class ModuleInterface:
             # Add Atmos trait if detected, always first
             traits.insert(0, '◗◖ ATMOS')
             
-        return "  ".join(traits)
+        return " / ".join(traits)
 
     def _get_precise_alac_info(self, attrs, codec, quality_tier: QualityEnum = None):
         """Fetch HLS manifest and parse audio group ID for exact bit depth and sample rate"""
