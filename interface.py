@@ -1032,11 +1032,7 @@ class ModuleInterface:
             default_cookies = Path('./config/cookies.txt')
             if default_cookies.exists():
                 cookies_path = default_cookies
-        error_msg = (
-            'Apple Music credentials are missing in settings.json. '
-            'Please add a cookies.txt file (Netscape format) at the path set in cookies_path (e.g. config/cookies.txt), '
-            'or set cookies_path in the OrpheusDL GUI Settings tab (Apple Music) or edit config/settings.json directly.'
-        )
+        error_msg = 'Apple Music cookies are required for downloading. Please provide cookies.txt in /config folder.'
         raise self.exception(error_msg)
 
     async def _setup_api_clients(self):
@@ -1743,8 +1739,7 @@ class ModuleInterface:
                    ("API Error 200" in err_str and "-1002" in err_str):
                     wrapper_enabled = override_use_wrapper if override_use_wrapper is not None else getattr(self.gamdl_base_downloader, 'use_wrapper', False)
                     if not wrapper_enabled:
-                        codec_val = local_effective_codec.value if hasattr(local_effective_codec, 'value') else str(local_effective_codec)
-                        raise DownloadError(f"Apple Music: {codec_val.upper()} requires the 'Use Wrapper' setting to be enabled. Please enable it or select 'High' quality instead.")
+                        raise DownloadError("ALAC & Dolby Atmos require 'Use Wrapper' to be enabled. Please enable it in Apple Music settings or select 'High' quality instead to download in AAC.")
                         
                 raise DownloadError(f"Apple Music: Failed to prepare download - {type(e).__name__}: {e}") from e
             
@@ -1768,7 +1763,7 @@ class ModuleInterface:
                 # Wrapper might be required but failed or unavailable
                 wrapper_enabled = override_use_wrapper if override_use_wrapper is not None else getattr(self.gamdl_base_downloader, 'use_wrapper', False)
                 if not wrapper_enabled:
-                    raise DownloadError(f"Apple Music: {requested_codec_val.upper()} requires the 'Use Wrapper' setting to be enabled. Please enable it or select 'High' quality instead.")
+                    raise DownloadError("ALAC & Dolby Atmos require 'Use Wrapper' to be enabled. Please enable it in Apple Music settings or select 'High' quality instead to download in AAC.")
                 else:
                     raise DownloadError(f"Apple Music: Could not obtain {requested_codec_val.upper()} stream. Please ensure your Docker/Wrapper container is running and correctly configured.")
 
@@ -1829,7 +1824,7 @@ class ModuleInterface:
                 # Check for amdecrypt connection error (agent not running)
                 conn_indicators = ["10020", "10061", "127.0.0.1", "connectionrefused", "refused", "geweigerd", "dial tcp"]
                 if any(ind in error_str.lower() for ind in conn_indicators) or isinstance(e, ConnectionRefusedError):
-                    raise DownloadError("Apple Music: Could not connect to the local decryption service. Please ensure your Docker/Wrapper container on (127.0.0.1:10020) is started and running.") from e
+                    raise DownloadError("Could not connect to the local decryption service. Please ensure your Docker/Wrapper container on (127.0.0.1:10020) is started and running.") from e
                 
                 if self._debug:
                     print(f"[Apple Music Error] gamdl download failed: {type(e).__name__}: {e}")
@@ -1870,7 +1865,7 @@ class ModuleInterface:
             
             # Check for generic amdecrypt connection error strings in cases where it wasn't caught earlier
             if "dial tcp" in error_str and ("10020" in error_str or "refused" in error_str.lower() or "geweigerd" in error_str.lower() or "127.0.0.1" in error_str):
-                raise DownloadError("Apple Music: amdecrypt could not connect to the local decryption service (127.0.0.1:10020). Please ensure your decryption agent is running.") from e
+                raise DownloadError("Could not connect to the local decryption service. Please ensure your Docker/Wrapper container on (127.0.0.1:10020) is started and running.") from e
             
             if '"failureType":"3076"' in error_str:
                 raise TrackUnavailableError("This song is unavailable in your region (Error 3076).") from e
@@ -1892,15 +1887,16 @@ class ModuleInterface:
             requested_codec_str = str(requested_codec_name.value if hasattr(requested_codec_name, 'value') else requested_codec_name).lower()
             
             conn_keywords = ["dial tcp", "refused", "geweigerd", "10020", "10061", "127.0.0.1", "connectionrefused"]
-            if "FormatNotAvailable" in str(type(e)) or any(k in final_msg.lower() for k in conn_keywords) or "connectionrefused" in str(type(e)).lower():
+            if "FormatNotAvailable" in str(type(e)) or "FormatNotAvailable" in final_msg or \
+               any(k in final_msg.lower() for k in conn_keywords) or "connectionrefused" in str(type(e)).lower():
                 if requested_codec_str in ['atmos', 'alac']:
                     wrapper_enabled = override_use_wrapper if override_use_wrapper is not None else getattr(self.gamdl_base_downloader, 'use_wrapper', False)
                     if not wrapper_enabled:
-                        final_msg = f"This {requested_codec_str.upper()} track requires the 'Use Wrapper' setting to be enabled in your Apple Music credentials. Please enable it or select 'High' quality instead."
+                        final_msg = "ALAC & Dolby Atmos require 'Use Wrapper' to be enabled. Please enable it in Apple Music settings or select 'High' quality instead to download in AAC."
                     else:
-                        final_msg = f"Could not connect to the local decryption service. Please ensure your Docker/Wrapper container on (127.0.0.1:10020) is started and running."
+                        final_msg = "Could not connect to the local decryption service. Please ensure your Docker/Wrapper container on (127.0.0.1:10020) is started and running."
                         
-            raise DownloadError(f"Apple Music: Download failed - {final_msg}") from e
+            raise DownloadError(final_msg) from e
 
     def get_album_info(self, album_id: str, data: Optional[Dict[str, Any]] = None, **kwargs) -> Optional[AlbumInfo]:
         """Get album information (catalog works without cookies; download requires credentials)."""
@@ -1963,7 +1959,7 @@ class ModuleInterface:
                         'duration': duration_sec,
                         'artists': [artist],
                         'release_year': release_year,
-                        'cover_url': cover_url,
+                        'cover_url': self._get_cover_url(t_attrs.get('artwork', {}).get('url')) or cover_url,
                         'preview_url': preview_url,
                         # Pass full API data so get_track_info doesn't need to refetch
                         'attributes': t_attrs,
@@ -2055,7 +2051,7 @@ class ModuleInterface:
                         'duration': duration_sec,
                         'artists': [artist],
                         'release_year': release_year,
-                        'cover_url': cover_url,
+                        'cover_url': self._get_cover_url(t_attrs.get('artwork', {}).get('url')) or cover_url,
                         'preview_url': preview_url,
                         # Pass full API data so get_track_info doesn't need to refetch
                         'attributes': t_attrs,
