@@ -330,7 +330,17 @@ class AppleMusicBaseDownloader:
                 ]
             mp4.update(tags)
             if extra_tags:
-                mp4.update(extra_tags)
+                # Filter out tags that might override the correct stream duration
+                # especially when using tags from a preview file
+                tags_to_exclude = [
+                    "\xa9dur", "dash", "purl", "pnam", "iTunSMPB", 
+                    "iTunNORM", "purl", "pnam", "egid", "stik", "rtng", "sfid"
+                ]
+                filtered_extra_tags = {
+                    k: v for k, v in extra_tags.items()
+                    if k not in tags_to_exclude
+                }
+                mp4.update(filtered_extra_tags)
 
         mp4.save()
 
