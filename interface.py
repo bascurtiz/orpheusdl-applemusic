@@ -818,10 +818,14 @@ class ModuleInterface:
                     print(f"[Apple Music Debug] Authenticated: Overriding URL storefront '{storefront}' with account storefront '{self.account_storefront}'")
                 storefront = self.account_storefront
             
+            extra_kwargs = {'country': storefront}
+            if url_info.get('is_library'):
+                extra_kwargs['is_library'] = True
+            
             return MediaIdentification(
                 media_type=media_type,
                 media_id=url_info['id'],
-                extra_kwargs={'country': storefront}
+                extra_kwargs=extra_kwargs
             )
             
         except Exception as e:
@@ -832,12 +836,32 @@ class ModuleInterface:
         from urllib.parse import urlparse, parse_qs
         
         parsed = urlparse(url)
-        path_parts = [part for part in parsed.path.split('/') if part]
+        path = parsed.path
+        if path.endswith('/'):
+            path = path[:-1]
+        path_parts = [part for part in path.split('/') if part]
         
-        if len(path_parts) < 3:
+        if len(path_parts) < 2:
             raise ValueError("Invalid Apple Music URL format")
         
-        # Extract country, type, and name from URL
+        # Handle library URLs: /library/playlist/p.XXXXX
+        if path_parts[0] == 'library':
+            media_type = path_parts[1]
+            media_id = path_parts[2] if len(path_parts) >= 3 else None
+            # Library requests require user storefront, but 'library' is not a country code
+            country = getattr(self, 'account_storefront', 'us')
+            
+            return {
+                'type': media_type,
+                'id': media_id,
+                'country': country,
+                'is_library': True
+            }
+
+        # Catalog URLs: /country/type/name/id or /country/type/name-id
+        if len(path_parts) < 3:
+             raise ValueError(f"Invalid standard Apple Music URL format: {url}")
+             
         country = path_parts[0]  # e.g., 'us'
         media_type = path_parts[1]  # e.g., 'song', 'album', 'playlist'
         
@@ -853,8 +877,8 @@ class ModuleInterface:
                 # ID is the last part
                 potential_id = path_parts[-1]
                 
-                # Check if it's a playlist ID (pl.xxxxx format)
-                if potential_id.startswith('pl.'):
+                # Check if it's a playlist/album ID (pl.xxxxx, p.xxxxx, or l.xxxxx format)
+                if potential_id.startswith('pl.') or potential_id.startswith('p.') or potential_id.startswith('l.'):
                     media_id = potential_id
                 # Check if it's a numeric ID
                 elif potential_id.isdigit():
@@ -871,11 +895,12 @@ class ModuleInterface:
                     # Try to get ID from the last part if no slash
                     id_match = re.search(r'(\d+)(?:\?|$)', name_and_id)
                 
-                # If no numeric ID found, check for playlist format (pl.xxxxx)
+                # If no numeric ID found, check for ID formats (pl., p., l.)
                 if not id_match:
-                    pl_match = re.search(r'/(pl\.[a-f0-9]+)(?:\?|$)', url)
+                    # Match pl. (catalog), p. (library playlist), or l. (library album)
+                    pl_match = re.search(r'/((?:pl\.|p\.|l\.)[a-f0-9]+)(?:\?|$)', url)
                     if not pl_match:
-                        pl_match = re.search(r'(pl\.[a-f0-9]+)(?:\?|$)', name_and_id)
+                        pl_match = re.search(r'((?:pl\.|p\.)[a-f0-9]+)(?:\?|$)', name_and_id)
                     if pl_match:
                         media_id = pl_match.group(1)
                     else:
@@ -1280,18 +1305,23 @@ class ModuleInterface:
         self._ensure_credentials()
 
         try:
-            # Ensure we have a valid country code for _set_storefront
-            country = kwargs.get('country') or (data.get('country') if data else None)
-            if getattr(self, '_debug', False):
-                print(f"[{module_information.service_name} DEBUG] Extracted country: {country}")
-            self._set_storefront(country)
+            # Detection for library IDs (e.g., 65WJUJIOK3UJT5J5H4DXEXBFUY)
+            def is_library_id(tid):
+                tid_str = str(tid)
+                return len(tid_str) > 15 and not tid_str.isdigit()
 
-            # Try to extract country if URL is provided
-            country = None
+            # Initialize country from kwargs
+            country = kwargs.get('country')
+            
+            # Try to extract country if URL is provided (overrides kwargs if present)
             if 'url' in kwargs and kwargs['url']:
-                country = self._parse_apple_music_url(kwargs['url']).get('country')
-                if self._debug:
-                    print(f"[Apple Music Debug] Parsed country '{country}' from URL: {kwargs['url']}")
+                url_country = self._parse_apple_music_url(kwargs['url']).get('country')
+                if url_country:
+                    country = url_country
+                    if self._debug:
+                        print(f"[Apple Music Debug] Parsed country '{country}' from URL: {kwargs['url']}")
+
+            self._set_storefront(country)
             
             # Check if we have raw_result from search
             if 'raw_result' in kwargs and kwargs['raw_result']:
@@ -1302,13 +1332,47 @@ class ModuleInterface:
                 # Use data if provided (e.g., from album track list), otherwise fetch
                 async def _fetch_with_logging(s, sid):
                     try:
-                        return await s.apple_music_api.get_song(sid)
+                        # Choose catalog or library API based on ID format
+                        if is_library_id(sid):
+                            if s._debug:
+                                print(f"[Apple Music Debug] Library ID detected: {sid}. Fetching via library API...")
+                            library_data = await s.apple_music_api.get_library_song(sid)
+                            
+                            # Critical Optimization: Try to map library item to catalog item
+                            if library_data and 'data' in library_data and library_data['data']:
+                                track_data = library_data['data'][0]
+                                catalog_rels = track_data.get('relationships', {}).get('catalog', {}).get('data', [])
+                                if catalog_rels:
+                                    cat_id = catalog_rels[0].get('id')
+                                    if cat_id:
+                                        if s._debug:
+                                            print(f"[Apple Music Debug] Library ID {sid} mapped to catalog ID {cat_id}. Fetching catalog metadata...")
+                                        # Recursively fetch the catalog version
+                                        return await s.apple_music_api.get_song(cat_id)
+                            return library_data
+                        else:
+                            return await s.apple_music_api.get_song(sid)
                     except Exception as fe:
                         if getattr(s, '_debug', False):
                             print(f"[Apple Music Debug] API fetch failed for {sid}: {fe}")
                         return None
 
                 track_api_data = data if data and isinstance(data, dict) and data.get('id') == track_id and 'attributes' in data else self._run_async(lambda s: _fetch_with_logging(s, track_id), storefront=country)
+                
+                # Check for Early ID Reconciliation: If the data (either provided or fetched) 
+                # already has a catalogId in its playParams, update track_id now!
+                if track_api_data:
+                    # Unwrap from 'data' list if present for the playParams check
+                    temp_item = track_api_data
+                    if isinstance(temp_item, dict) and 'data' in temp_item and temp_item['data']:
+                         temp_item = temp_item['data'][0]
+                    
+                    play_params = temp_item.get('attributes', {}).get('playParams', {})
+                    catalog_id = play_params.get('catalogId')
+                    if catalog_id and str(catalog_id) != str(track_id):
+                        if self._debug:
+                            print(f"[Apple Music Debug] Map library ID {track_id} to catalog ID {catalog_id} before unwrap. Updating track_id.")
+                        track_id = str(catalog_id)
                 
                 # Unwrap from 'data' list if present
                 if track_api_data and 'data' in track_api_data and len(track_api_data['data']) > 0:
@@ -1340,7 +1404,26 @@ class ModuleInterface:
                         s.apple_music_api.storefront = st
                         
                         try:
-                            return await s.apple_music_api.get_song(sid)
+                            # Use library song if needed
+                            if is_library_id(sid):
+                                if s._debug:
+                                    print(f"[Apple Music Debug] Library ID {sid} in guest fetch. Using get_library_song.")
+                                library_data = await s.apple_music_api.get_library_song(sid)
+                                
+                                # Optimization: Map to catalog item if possible
+                                if library_data and 'data' in library_data and library_data['data']:
+                                    track_data = library_data['data'][0]
+                                    catalog_rels = track_data.get('relationships', {}).get('catalog', {}).get('data', [])
+                                    if catalog_rels:
+                                        cat_id = catalog_rels[0].get('id')
+                                        if cat_id:
+                                            if s._debug:
+                                                print(f"[Apple Music Debug] Guest Library ID {sid} mapped to catalog ID {cat_id}. Switching.")
+                                            # Recursively fetch the catalog version
+                                            return await s.apple_music_api.get_song(cat_id)
+                                return library_data
+                            else:
+                                return await s.apple_music_api.get_song(sid)
                         finally:
                             s.apple_music_api.storefront = orig_st
                             s.apple_music_api.client.headers.update(original_headers)
@@ -1409,10 +1492,13 @@ class ModuleInterface:
 
             # --- Supplemental Metadata Fetch (if IDs or lyrics flags missing) ---
             # ONLY do this if explicitly allowed (e.g. during download) or if we have NO IDs at all
+            # Re-fetch full track data if needed (always use library-aware fetcher)
+            album_id_from_rels = attrs.get('albumName') or (track_api_data.get('relationships', {}).get('albums', {}).get('data', [{}])[0].get('id'))
+            artist_id_from_rels = attrs.get('artistName') or (track_api_data.get('relationships', {}).get('artists', {}).get('data', [{}])[0].get('id'))
             if allow_refetch and (not album_id_from_rels or not artist_id_from_rels or 'hasLyrics' not in attrs or 'audioTraits' not in attrs):
                 if self._debug:
                     print(f"[Apple Music Debug] Incomplete metadata (Album={album_id_from_rels}, Artist={artist_id_from_rels}, hasLyrics={'hasLyrics' in attrs}, audioTraits={'audioTraits' in attrs}) for track {track_id}. Fetching full song data.")
-                full_track_data = self._run_async(lambda s: s.apple_music_api.get_song(track_id), storefront=country)
+                full_track_data = self._run_async(lambda s: _fetch_with_logging(s, track_id), storefront=country)
                 
                 if full_track_data and 'data' in full_track_data and len(full_track_data['data']) > 0:
                     track_api_data = full_track_data['data'][0]
@@ -1431,6 +1517,8 @@ class ModuleInterface:
                 name_for_search = attrs.get('name')
                 artist_name_for_search = attrs.get('artistName')
                 if track_isrc or (name_for_search and artist_name_for_search):
+                    equivalent_id = self._get_equivalent_track_id(track_isrc, user_storefront, name_for_search, artist_name_for_search)
+                    
                     if self._debug:
                         print(f"[Apple Music Debug] ID {track_id} -> Storefronts: User={user_storefront}, API={api_storefront}. Result equivalent_id={equivalent_id}")
                     
@@ -1918,7 +2006,13 @@ class ModuleInterface:
             if not album_data or not isinstance(album_data, dict) or 'attributes' not in album_data:
                 if self._debug:
                     print(f"[Apple Music Debug] Fetching full album info for {album_id}")
-                album_data = self._run_async(lambda s: s.apple_music_api.get_album(album_id), storefront=country)
+                
+                is_library = kwargs.get('is_library', False) or str(album_id).startswith('l.')
+                if is_library:
+                    album_data = self._run_async(lambda s: s.apple_music_api.get_library_album(album_id), storefront=country)
+                else:
+                    album_data = self._run_async(lambda s: s.apple_music_api.get_album(album_id), storefront=country)
+                
                 if album_data and 'data' in album_data:
                     album_data = album_data['data'][0]
             elif self._debug:
@@ -2008,10 +2102,17 @@ class ModuleInterface:
                     'tracks' not in rels or 
                     not rels['tracks'].get('data')):
                     if self._debug:
-                        print(f"[Apple Music Debug] Search result missing track data, fetching full playlist info...")
-                    playlist_data = self._run_async(lambda s: s.apple_music_api.get_playlist(playlist_id), storefront=country)
+                         print(f"[Apple Music Debug] Search result missing track data, fetching full playlist info...")
+                    
+                    if str(playlist_id).startswith('p.') or kwargs.get('is_library'):
+                         playlist_data = self._run_async(lambda s: s.apple_music_api.get_library_playlist(playlist_id), storefront=country)
+                    else:
+                         playlist_data = self._run_async(lambda s: s.apple_music_api.get_playlist(playlist_id), storefront=country)
             else:
-                playlist_data = self._run_async(lambda s: s.apple_music_api.get_playlist(playlist_id), storefront=country)
+                if str(playlist_id).startswith('p.') or kwargs.get('is_library'):
+                     playlist_data = self._run_async(lambda s: s.apple_music_api.get_library_playlist(playlist_id), storefront=country)
+                else:
+                     playlist_data = self._run_async(lambda s: s.apple_music_api.get_playlist(playlist_id), storefront=country)
             
             if playlist_data and 'data' in playlist_data:
                 playlist_data = playlist_data['data'][0]

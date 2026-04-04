@@ -350,6 +350,23 @@ class AppleMusicApi:
 
         return playlist
 
+    async def get_library_song(
+        self,
+        song_id: str,
+        extend: str = "extendedAssetUrls",
+        include: str = "albums,artists,catalog",
+    ) -> dict | None:
+        song = await self._amp_request(
+            f"/v1/me/library/songs/{song_id}",
+            {
+                "extend": extend,
+                "include": include,
+            },
+        )
+        logger.debug(f"Library song: {song}")
+
+        return song
+
     async def get_search_results(
         self,
         term: str,
