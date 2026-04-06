@@ -1866,57 +1866,81 @@ class ModuleInterface:
             
             print(f"{indent_spaces}Downloading and processing {codec_name} track...")
             
-            try:
-                await self.gamdl_downloader.download(download_item)
-                
-                # Sanity check for extremely small files (e.g. 1.5MB for multi-minute ALAC)
-                final_path = Path(download_item.final_path)
-                if final_path.exists():
-                    file_size = final_path.stat().st_size
-                    duration_sec = 0
-                    try:
-                        attrs = download_item.media_metadata.get('attributes', {})
-                        duration_ms = attrs.get('durationInMillis')
-                        if duration_ms: duration_sec = duration_ms // 1000
-                    except: pass
+            # Implementation of retry loop for wrapper connection
+            max_retries = 1000 # Effectively infinite for a reasonable time
+            retry_wait = 10 # Seconds
+            
+            for attempt in range(max_retries):
+                try:
+                    await self.gamdl_downloader.download(download_item)
                     
-                    # 1.5MB is ~50kbps for 4 mins. Even AAC 256 is ~8MB. ALAC is ~30MB+. 
-                    # If it's less than 2MB and duration is significant, something is fundamentally wrong.
-                    if requested_codec_val in ['alac', 'atmos'] and duration_sec > 30 and file_size < 2000000:
-                         isrc = download_item.media_metadata.get('attributes', {}).get('isrc')
-                         if isrc and not kwargs.get('_is_retry'):
-                             if self._debug:
-                                 print(f"[Apple Music Warning] Downloaded file is too small ({file_size} bytes). Likely a preview.")
-                                 print(f"                     Attempting to find a better ID for ISRC {isrc} in {self.account_storefront}...")
-                             
-                             # Try to find the track again in our account storefront specifically
-                             equiv_id = self._get_equivalent_track_id(isrc, self.account_storefront)
-                             if equiv_id and equiv_id != track_id:
+                    # Sanity check for extremely small files (e.g. 1.5MB for multi-minute ALAC)
+                    final_path = Path(download_item.final_path)
+                    if final_path.exists():
+                        file_size = final_path.stat().st_size
+                        duration_sec = 0
+                        try:
+                            attrs = download_item.media_metadata.get('attributes', {})
+                            duration_ms = attrs.get('durationInMillis')
+                            if duration_ms: duration_sec = duration_ms // 1000
+                        except: pass
+                        
+                        # 1.5MB is ~50kbps for 4 mins. Even AAC 256 is ~8MB. ALAC is ~30MB+. 
+                        # If it's less than 2MB and duration is significant, something is fundamentally wrong.
+                        if requested_codec_val in ['alac', 'atmos'] and duration_sec > 30 and file_size < 2000000:
+                             isrc = download_item.media_metadata.get('attributes', {}).get('isrc')
+                             if isrc and not kwargs.get('_is_retry'):
                                  if self._debug:
-                                     print(f"[Apple Music Debug] Found different ID {equiv_id} for ISRC {isrc}. Retrying download...")
-                                 # Cleanup the small file
-                                 try: final_path.unlink()
-                                 except: pass
-                                 # Recursive call with retry flag
-                                 new_kwargs = kwargs.copy()
-                                 new_kwargs['_is_retry'] = True
-                                 new_kwargs['api_response'] = None # Force fresh lookup
-                                 return await self.get_track_download(equiv_id, quality_tier, codec_options, **new_kwargs)
+                                     print(f"[Apple Music Warning] Downloaded file is too small ({file_size} bytes). Likely a preview.")
+                                     print(f"                     Attempting to find a better ID for ISRC {isrc} in {self.account_storefront}...")
+                                 
+                                 # Try to find the track again in our account storefront specifically
+                                 equiv_id = self._get_equivalent_track_id(isrc, self.account_storefront)
+                                 if equiv_id and equiv_id != track_id:
+                                     if self._debug:
+                                         print(f"[Apple Music Debug] Found different ID {equiv_id} for ISRC {isrc}. Retrying download...")
+                                     # Cleanup the small file
+                                     try: final_path.unlink()
+                                     except: pass
+                                     # Recursive call with retry flag
+                                     new_kwargs = kwargs.copy()
+                                     new_kwargs['_is_retry'] = True
+                                     new_kwargs['api_response'] = None # Force fresh lookup
+                                     return await self.get_track_download(equiv_id, quality_tier, codec_options, **new_kwargs)
 
-                         if self._debug:
-                             print(f"[Apple Music Error] Downloaded file is suspiciously small ({file_size} bytes for {duration_sec}s). Likely a preview.")
-                             print(f"                   Storefront used: {getattr(self.apple_music_api, 'storefront', 'unknown')}")
-                         raise DownloadError(f"Apple Music: The downloaded {requested_codec_val.upper()} file is corrupt or a preview (too small). This often happens if the track is region-locked or your IP region ({os.environ.get('GEO', 'unknown')}) doesn't match your account region.")
-            except Exception as e:
-                error_str = str(e)
-                # Check for amdecrypt connection error (agent not running)
-                conn_indicators = ["10020", "10061", "127.0.0.1", "connectionrefused", "refused", "geweigerd", "dial tcp"]
-                if any(ind in error_str.lower() for ind in conn_indicators) or isinstance(e, ConnectionRefusedError):
-                    raise DownloadError("Could not connect to the local decryption service. Please ensure your Docker/Wrapper container on (127.0.0.1:10020) is started and running.") from e
-                
-                if self._debug:
-                    print(f"[Apple Music Error] gamdl download failed: {type(e).__name__}: {e}")
-                raise DownloadError(f"Apple Music: Download execution failed - {type(e).__name__}: {e}") from e
+                             if self._debug:
+                                 print(f"[Apple Music Error] Downloaded file is suspiciously small ({file_size} bytes for {duration_sec}s). Likely a preview.")
+                             raise DownloadError(f"Apple Music: The downloaded {requested_codec_val.upper()} file is corrupt or a preview (too small).")
+                    
+                    break # Success!
+                    
+                except Exception as e:
+                    error_str = str(e)
+                    # Check for amdecrypt connection error (agent not running)
+                    conn_indicators = ["10020", "10061", "127.0.0.1", "connectionrefused", "refused", "geweigerd", "dial tcp"]
+                    if any(ind in error_str.lower() for ind in conn_indicators) or isinstance(e, ConnectionRefusedError):
+                        # Play audible notification if enabled
+                        if getattr(self.module_controller.orpheus_options, 'play_sound_on_finish', True):
+                            try:
+                                current_platform = platform.system()
+                                if current_platform == "Windows":
+                                    import winsound
+                                    winsound.PlaySound("SystemHand", winsound.SND_ALIAS | winsound.SND_ASYNC)
+                                elif current_platform == "Darwin":
+                                    import subprocess
+                                    subprocess.Popen(["afplay", "/System/Library/Sounds/Sosumi.aiff"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            except Exception as sound_e:
+                                if self._debug:
+                                    print(f"[Apple Music Warning] Could not play retry sound: {sound_e}")
+                        
+                        print(f"{indent_spaces}Connection to the local decryption service (Wrapper) failed.")
+                        print(f"{indent_spaces}Waiting {retry_wait}s for restoration before retrying download...")
+                        await asyncio.sleep(retry_wait)
+                        continue
+                    
+                    if self._debug:
+                        print(f"[Apple Music Error] gamdl download failed: {type(e).__name__}: {e}")
+                    raise DownloadError(f"Apple Music: Download execution failed - {type(e).__name__}: {e}") from e
             
             return download_item
 
@@ -2015,6 +2039,32 @@ class ModuleInterface:
                 
                 if album_data and 'data' in album_data:
                     album_data = album_data['data'][0]
+
+            # Handle pagination for large albums/compilations
+            if album_data.get('relationships') and 'tracks' in album_data['relationships']:
+                tracks_rel = album_data['relationships']['tracks']
+                if 'next' in tracks_rel:
+                    if self._debug:
+                        print(f"[Apple Music Debug] Album has more tracks, fetching pagination pages...")
+                    
+                    async def fetch_all_tracks(api, initial_rel):
+                        all_data = initial_rel.get('data', [])
+                        async for page in api.extend_api_data(initial_rel):
+                            all_data.extend(page.get('data', []))
+                        return all_data
+                    
+                    current_sf = self.apple_music_api.storefront
+                    try:
+                        paged_tracks = self._run_async(lambda s: fetch_all_tracks(s.apple_music_api, tracks_rel))
+                        if paged_tracks:
+                            if self._debug:
+                                print(f"[Apple Music Debug] Total album tracks after pagination: {len(paged_tracks)}")
+                            album_data['relationships']['tracks']['data'] = paged_tracks
+                    except Exception as e:
+                        if self._debug:
+                            print(f"[Apple Music Warning] Album pagination failed: {e}")
+                    finally:
+                        self.apple_music_api.storefront = current_sf
             elif self._debug:
                 print(f"[Apple Music Debug] Using provided album data for {album_id}")
 
@@ -2116,6 +2166,33 @@ class ModuleInterface:
             
             if playlist_data and 'data' in playlist_data:
                 playlist_data = playlist_data['data'][0]
+            
+            # Handle pagination for large playlists (library and catalog)
+            if playlist_data.get('relationships') and 'tracks' in playlist_data['relationships']:
+                tracks_rel = playlist_data['relationships']['tracks']
+                if 'next' in tracks_rel:
+                    if self._debug:
+                        print(f"[Apple Music Debug] Playlist has more tracks, fetching pagination pages...")
+                    
+                    async def fetch_all_tracks(api, initial_rel):
+                        all_data = initial_rel.get('data', [])
+                        async for page in api.extend_api_data(initial_rel):
+                            all_data.extend(page.get('data', []))
+                        return all_data
+                    
+                    # Store existing storefront to restore later if it changes during fetch
+                    current_sf = self.apple_music_api.storefront
+                    try:
+                        paged_tracks = self._run_async(lambda s: fetch_all_tracks(s.apple_music_api, tracks_rel))
+                        if paged_tracks:
+                            if self._debug:
+                                print(f"[Apple Music Debug] Total tracks after pagination: {len(paged_tracks)}")
+                            playlist_data['relationships']['tracks']['data'] = paged_tracks
+                    except Exception as e:
+                        if self._debug:
+                            print(f"[Apple Music Warning] Pagination failed, using available tracks: {e}")
+                    finally:
+                        self.apple_music_api.storefront = current_sf
             
             attrs = playlist_data['attributes']
             if 'url' in attrs:
