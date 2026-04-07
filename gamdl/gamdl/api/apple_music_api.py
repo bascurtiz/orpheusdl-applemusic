@@ -280,7 +280,7 @@ class AppleMusicApi:
     async def get_playlist(
         self,
         playlist_id: str,
-        limit_tracks: int = 300,
+        limit_tracks: int = 100,
         extend: str = "extendedAssetUrls",
     ) -> dict | None:
         playlist = await self._amp_request(
@@ -397,7 +397,7 @@ class AppleMusicApi:
             return
 
         next_uri_params = parse_qs(urlparse(next_uri).query)
-        limit = int(next_uri_params["offset"][0])
+        limit = int(next_uri_params.get("limit", [next_uri_params["offset"][0]])[0])
         while next_uri:
             extended_api_data = await self._get_extended_api_data(
                 next_uri,
