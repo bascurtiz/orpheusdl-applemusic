@@ -293,7 +293,8 @@ module_information = ModuleInformation(
         'cookies_path': './config/cookies.txt',
         'language': 'en-US',
         'use_wrapper': False,
-        'wrapper_decrypt_ip': '127.0.0.1:10020'
+        'wrapper_decrypt_ip': '127.0.0.1:10020',
+        'wrapper_restart_command': ''
     },
     netlocation_constant='music.apple',
     test_url='https://music.apple.com/us/album/1989-taylors-version/1708308989',
@@ -1601,8 +1602,11 @@ class ModuleInterface:
                     display_bit_depth = 16
                     display_sample_rate = 44100
 
+            # Determine the primary album artist name. Use the joined artist names from attributes.
+            album_artist = attrs.get('albumArtistName', artist_name)
+
             tags_obj = Tags(
-                album_artist=attrs.get('albumArtistName', artist_name),
+                album_artist=album_artist,
                 track_number=attrs.get('trackNumber'),
                 disc_number=attrs.get('discNumber'),
                 release_date=release_date_str,
@@ -1865,10 +1869,10 @@ class ModuleInterface:
                 print(f"{indent_spaces}Detected Stream: {codec_name} ({stream_info.width}x{stream_info.height})")
             
             print(f"{indent_spaces}Downloading and processing {codec_name} track...")
-            
             # Implementation of retry loop for wrapper connection
             max_retries = 1000 # Effectively infinite for a reasonable time
             retry_wait = 10 # Seconds
+            restarted_wrapper = False
             
             for attempt in range(max_retries):
                 try:
@@ -1934,6 +1938,21 @@ class ModuleInterface:
                                     print(f"[Apple Music Warning] Could not play retry sound: {sound_e}")
                         
                         print(f"{indent_spaces}Connection to the local decryption service (Wrapper) failed.")
+                        
+                        # Attempt to restart the wrapper if a command is configured and it's the first retry
+                        restart_command = self.settings.get('wrapper_restart_command')
+                        if restart_command and not restarted_wrapper:
+                            print(f"{indent_spaces}Attempting to restart decryption wrapper: {restart_command}")
+                            try:
+                                import subprocess
+                                # Execute the restart command in the background
+                                subprocess.run(restart_command, shell=True, capture_output=True, text=True)
+                                restarted_wrapper = True
+                                # Extra wait for service to initialize after restart command
+                                await asyncio.sleep(5)
+                            except Exception as restart_e:
+                                print(f"{indent_spaces}Wrapper restart command failed: {restart_e}")
+                        
                         print(f"{indent_spaces}Waiting {retry_wait}s for restoration before retrying download...")
                         await asyncio.sleep(retry_wait)
                         continue
