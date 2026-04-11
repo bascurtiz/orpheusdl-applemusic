@@ -275,20 +275,21 @@ SyncedLyricsFormat = None
 RemuxFormatMusicVideo = None
 
 from utils.models import *
-from utils.utils import create_temp_filename, download_to_temp
+from utils.utils import create_temp_filename, download_to_temp, get_primary_artist
 
 from utils.models import (
     TrackInfo, AlbumInfo, ArtistInfo, PlaylistInfo, LyricsInfo, 
     DownloadTypeEnum, QualityEnum,
     DownloadEnum as OrpheusDownloadEnum,
     ModuleInformation, ModuleModes, ManualEnum, Tags, CodecEnum,
-    TrackDownloadInfo, ModuleController, OrpheusOptions
+    TrackDownloadInfo, ModuleController, OrpheusOptions,
+    CreditsInfo, CoverInfo, CoverOptions, ImageFileTypeEnum
 )
 from utils.exceptions import AuthenticationError, DownloadError, TrackUnavailableError
 
 module_information = ModuleInformation(
     service_name='Apple Music',
-    module_supported_modes=ModuleModes.download,
+    module_supported_modes=ModuleModes.download | ModuleModes.lyrics | ModuleModes.covers | ModuleModes.credits,
     session_settings={
         'cookies_path': './config/cookies.txt',
         'language': 'en-US',
@@ -819,7 +820,7 @@ class ModuleInterface:
                     print(f"[Apple Music Debug] Authenticated: Overriding URL storefront '{storefront}' with account storefront '{self.account_storefront}'")
                 storefront = self.account_storefront
             
-            extra_kwargs = {'country': storefront}
+            extra_kwargs = {'country': storefront, 'original_country': url_info['country']}
             if url_info.get('is_library'):
                 extra_kwargs['is_library'] = True
             
@@ -1456,7 +1457,7 @@ class ModuleInterface:
                                         'artwork': {'url': itunes_track.get('artworkUrl100', '').replace('100x100bb.jpg', '{w}x{h}bb.jpg')},
                                         'durationInMillis': itunes_track.get('trackTimeMillis'),
                                         'releaseDate': itunes_track.get('releaseDate'),
-                                        'genreNames': [itunes_track.get('primaryGenreName')],
+                                        'genreNames': [g for g in [itunes_track.get('primaryGenreName')] if g and g.lower() != 'music'],
                                         'trackNumber': itunes_track.get('trackNumber'),
                                         'discNumber': itunes_track.get('discNumber'),
                                         'contentRating': itunes_track.get('contentAdvisoryRating', '').lower()
@@ -1496,7 +1497,7 @@ class ModuleInterface:
             # Re-fetch full track data if needed (always use library-aware fetcher)
             album_id_from_rels = attrs.get('albumName') or (track_api_data.get('relationships', {}).get('albums', {}).get('data', [{}])[0].get('id'))
             artist_id_from_rels = attrs.get('artistName') or (track_api_data.get('relationships', {}).get('artists', {}).get('data', [{}])[0].get('id'))
-            if allow_refetch and (not album_id_from_rels or not artist_id_from_rels or 'hasLyrics' not in attrs or 'audioTraits' not in attrs):
+            if allow_refetch and (not album_id_from_rels or not artist_id_from_rels or 'hasLyrics' not in attrs or 'audioTraits' not in attrs or 'recordLabel' not in attrs or 'copyright' not in attrs or 'upc' not in attrs):
                 if self._debug:
                     print(f"[Apple Music Debug] Incomplete metadata (Album={album_id_from_rels}, Artist={artist_id_from_rels}, hasLyrics={'hasLyrics' in attrs}, audioTraits={'audioTraits' in attrs}) for track {track_id}. Fetching full song data.")
                 full_track_data = self._run_async(lambda s: _fetch_with_logging(s, track_id), storefront=country)
@@ -1602,17 +1603,62 @@ class ModuleInterface:
                     display_bit_depth = 16
                     display_sample_rate = 44100
 
-            # Determine the primary album artist name. Use the joined artist names from attributes.
-            album_artist = attrs.get('albumArtistName', artist_name)
+            # Determine the primary album artist name.
+            album_artist = get_primary_artist(attrs.get('albumArtistName', artist_name))
 
+            # Extract record label and copyright from song attributes
+            record_label = attrs.get('recordLabel')
+            copyright_info = attrs.get('copyright')
+
+            # --- Relationship-based Metadata Inheritance ---
+            # If missing from song attributes, try to inherit from album relationship (crucial for Apple Music)
+            rels = track_api_data.get('relationships', {})
+            albums_rel = rels.get('albums', {}).get('data', [])
+            album_attrs = albums_rel[0].get('attributes', {}) if albums_rel else {}
+            
+            if not record_label or not copyright_info:
+                if not record_label: record_label = album_attrs.get('recordLabel')
+                if not copyright_info: copyright_info = album_attrs.get('copyright')
+            
+            # Extract UPC (Universal Product Code) from track or album attributes
+            upc = attrs.get('upc') or album_attrs.get('upc')
+            
+            # --- Detailed Debug Logging ---
+            if self._debug:
+                print(f"[Apple Music Metadata Debug] Available keys for track {track_id}: {list(attrs.keys())}")
+                if copyright_info: print(f"[Apple Music Metadata Debug] Source Copyright: {copyright_info}")
+                if record_label: print(f"[Apple Music Metadata Debug] Source RecordLabel: {record_label}")
+            
+            if not record_label and copyright_info:
+                # Fallback: Extract from copyright string by stripping symbols and years
+                record_label = re.sub(r'^(?:℗|©|p|c|\(p\)|\(c\)|\u2117|\u00a9)\s*(?:\d{4})?\s*', '', copyright_info, flags=re.IGNORECASE).strip()
+                # If it still starts with a year or just the symbol, clean it further
+                record_label = re.sub(r'^\d{4}\s*', '', record_label).strip()
+
+            if self._debug and record_label:
+                print(f"[Apple Music Debug] Final extracted label/publisher: {record_label}")
+
+            # Extract track and disc counts
+            total_tracks_val = attrs.get('trackCount') or album_attrs.get('trackCount')
+            total_discs_val = attrs.get('discCount') or album_attrs.get('discCount')
+
+            # Determine the storefront that will be used for the URL (the one that actually yielded a valid metadata/download)
+            effective_storefront = user_storefront if actual_download_id != track_id else api_storefront
+            
             tags_obj = Tags(
                 album_artist=album_artist,
                 track_number=attrs.get('trackNumber'),
+                total_tracks=total_tracks_val,
                 disc_number=attrs.get('discNumber'),
+                total_discs=total_discs_val,
                 release_date=release_date_str,
-                genres=attrs.get('genreNames', []),
+                genres=[g for g in attrs.get('genreNames', []) if g.lower() != 'music'],
                 isrc=attrs.get('isrc'),
                 composer=attrs.get('composerName'),
+                label=record_label,
+                copyright=copyright_info,
+                upc=upc,
+                track_url=f"https://music.apple.com/{effective_storefront}/song/unknown/{actual_download_id}"
             )
 
             cover_url = self._get_cover_url(attrs.get('artwork', {}).get('url'))
@@ -1623,7 +1669,7 @@ class ModuleInterface:
                 'quality_tier': quality_tier,
                 'source_quality_tier': quality_tier.name if hasattr(quality_tier, 'name') else str(quality_tier),
                 'original_id': track_id,
-                'effective_storefront': user_storefront if actual_download_id != track_id else api_storefront
+                'effective_storefront': effective_storefront
             }
             if override_song_codec: download_extra_kwargs['song_codec'] = override_song_codec
             if kwargs.get('use_wrapper') is not None: download_extra_kwargs['use_wrapper'] = kwargs.get('use_wrapper')
@@ -1634,7 +1680,8 @@ class ModuleInterface:
                 duration=duration_sec, codec=display_codec, bitrate=display_bitrate, bit_depth=display_bit_depth,
                 sample_rate=display_sample_rate // 1000 if display_sample_rate else None, release_year=year,
                 cover_url=cover_url, explicit=explicit, tags=tags_obj, id=actual_download_id,
-                download_extra_kwargs=download_extra_kwargs
+                download_extra_kwargs=download_extra_kwargs,
+                lyrics_extra_kwargs={'data': track_api_data}
             )
 
         except Exception as e:
@@ -1791,6 +1838,10 @@ class ModuleInterface:
             # Sanitize song_data: Ensure relationships is a dict, not None, to avoid TypeError in gamdl/tagging
             if song_data and song_data.get('relationships') is None:
                 song_data['relationships'] = {}
+            
+            # Filter generic "Music" genre so it doesn't end up in gamdl's internal tagging
+            if song_data and 'attributes' in song_data and 'genreNames' in song_data['attributes']:
+                song_data['attributes']['genreNames'] = [g for g in song_data['attributes']['genreNames'] if g.lower() != 'music']
             
             # 2. Get download item
             if self._debug:
@@ -2029,6 +2080,75 @@ class ModuleInterface:
                         
             raise DownloadError(final_msg) from e
 
+    def get_track_lyrics(self, track_id: str, **kwargs) -> Optional[LyricsInfo]:
+        if not _lazy_import_gamdl():
+            return None
+            
+        # Use provided data if available to save an API call
+        song_data = kwargs.get('data')
+        
+        # If not provided, we need to fetch it (fallback)
+        if not song_data:
+            self._ensure_credentials()
+            
+            # Use background loop worker to set storefront correctly during fetch
+            country = kwargs.get('country')
+            song_metadata = self._run_async(lambda s: s.apple_music_api.get_song(track_id), storefront=country)
+            
+            if song_metadata and 'data' in song_metadata and song_metadata['data']:
+                song_data = song_metadata['data'][0]
+        
+        if not song_data:
+            return None
+            
+        # Initialize gamdl components if not done (needed for gamdl_song_interface)
+        # Use standard AAC as it doesn't matter for metadata
+        self._initialize_gamdl_components(song_codec=GamdlSongCodec.AAC_LEGACY)
+        
+        async def _fetch_lyrics():
+            if not self.gamdl_song_interface:
+                return None
+            return await self.gamdl_song_interface.get_lyrics(song_data, SyncedLyricsFormat.LRC)
+            
+        try:
+            lyrics = self._run_async(lambda s: _fetch_lyrics())
+            if lyrics:
+                return LyricsInfo(
+                    embedded=lyrics.unsynced,
+                    synced=lyrics.synced
+                )
+        except Exception as e:
+            if self._debug:
+                print(f"[Apple Music Debug] Failed to fetch lyrics for {track_id}: {e}")
+        
+        return None
+
+    def get_track_credits(self, track_id: str, data: Optional[Dict[str, Any]] = None, **kwargs) -> Optional[List[CreditsInfo]]:
+        # Use existing get_track_info to avoid duplicating extraction logic
+        # We pass allow_refetch=True to ensure we get labels/composers
+        track_info = self.get_track_info(track_id, QualityEnum.LOW, None, data=data, **kwargs)
+        if not track_info or not track_info.tags:
+            return []
+            
+        credits_dict = []
+        if track_info.tags.composer:
+            credits_dict.append(CreditsInfo(type='Composer', names=[track_info.tags.composer]))
+        if track_info.tags.label:
+            credits_dict.append(CreditsInfo(type='Label', names=[track_info.tags.label]))
+            
+        return credits_dict
+
+    def get_track_cover(self, track_id: str, cover_options: CoverOptions, data: Optional[Dict[str, Any]] = None, **kwargs) -> Optional[CoverInfo]:
+        # Use existing get_track_info to get the cover URL
+        track_info = self.get_track_info(track_id, QualityEnum.LOW, None, data=data, **kwargs)
+        if not track_info or not track_info.cover_url:
+            return None
+            
+        # Apple Music artwork URLs are templates, but get_track_info already resolves them 
+        # using the resolution from settings.
+        return CoverInfo(url=track_info.cover_url, file_type=ImageFileTypeEnum.jpg)
+
+
     def get_album_info(self, album_id: str, data: Optional[Dict[str, Any]] = None, **kwargs) -> Optional[AlbumInfo]:
         """Get album information (catalog works without cookies; download requires credentials)."""
         try:
@@ -2094,6 +2214,28 @@ class ModuleInterface:
             album_artist = attrs.get('artistName', '')
             cover_url = self._get_cover_url(attrs.get('artwork', {}).get('url'))
             release_year = self._extract_year(attrs.get('releaseDate'))
+            
+            # Extract record label, copyright and UPC (Barcode) from album attributes
+            record_label = attrs.get('recordLabel')
+            copyright_info = attrs.get('copyright')
+            upc = attrs.get('upc')
+            
+            # --- Detailed Debug Logging ---
+            if self._debug:
+                print(f"[Apple Music Metadata Debug] Available keys for album {album_id}: {list(attrs.keys())}")
+                if copyright_info: print(f"[Apple Music Metadata Debug] Source Copyright: {copyright_info}")
+                if record_label: print(f"[Apple Music Metadata Debug] Source RecordLabel: {record_label}")
+            
+            if not record_label and copyright_info:
+                # Fallback: Extract from copyright string by stripping symbols and years
+                # Matches symbols like ℗, ©, (P), (C) and years
+                record_label = re.sub(r'^(?:℗|©|p|c|\(p\)|\(c\)|\u2117|\u00a9)\s*(?:\d{4})?\s*', '', copyright_info, flags=re.IGNORECASE).strip()
+                # If it still starts with a year or just the symbol, clean it further
+                record_label = re.sub(r'^\d{4}\s*', '', record_label).strip()
+
+            if self._debug and record_label:
+                print(f"[Apple Music Debug] Final extracted label/publisher: {record_label}")
+
             # Use full track data from API when available to avoid N get_track_info calls in GUI
             tracks_out = []
             rel_tracks = (album_data.get('relationships') or {}).get('tracks', {}).get('data', [])
@@ -2115,6 +2257,14 @@ class ModuleInterface:
                     previews = t_attrs.get('previews', [])
                     if previews and len(previews) > 0:
                         preview_url = previews[0].get('url')
+
+                    # Pass through album-level label/copyright if song doesn't have it
+                    if record_label and 'recordLabel' not in t_attrs:
+                        t_attrs['recordLabel'] = record_label
+                    if copyright_info and 'copyright' not in t_attrs:
+                        t_attrs['copyright'] = copyright_info
+                    if upc and 'upc' not in t_attrs:
+                        t_attrs['upc'] = upc
 
                     tracks_out.append({
                         'id': track.get('id', ''),
@@ -2145,6 +2295,8 @@ class ModuleInterface:
                 artist_id=str(artist_id) if artist_id else None,
                 cover_url=cover_url,
                 release_year=release_year,
+                label=record_label,
+                upc=upc,
                 tracks=tracks_out,
                 track_extra_kwargs={**kwargs, 'country': country}
             )
