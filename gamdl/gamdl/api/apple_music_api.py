@@ -379,7 +379,7 @@ class AppleMusicApi:
             {
                 "term": term,
                 "types": types,
-                "limit": limit,
+                "limit": min(limit, 50),
                 "offset": offset,
             },
         )

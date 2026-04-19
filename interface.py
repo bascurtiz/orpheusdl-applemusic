@@ -928,7 +928,11 @@ class ModuleInterface:
             }
             
             search_type = type_mapping.get(query_type, 'songs')
-            results = self._run_async(lambda s: s.apple_music_api.get_search_results(query, types=search_type, limit=limit))
+            
+            # Apple Music Search API has a hard limit of 50 results per request
+            search_limit = min(int(limit), 50) if limit else 50
+            
+            results = self._run_async(lambda s: s.apple_music_api.get_search_results(query, types=search_type, limit=search_limit))
             
             # Map 'results' structure to what the rest of the method expects
             if 'results' in results:
