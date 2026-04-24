@@ -1553,6 +1553,10 @@ class ModuleInterface:
             duration_ms = attrs.get('durationInMillis')
             duration_sec = duration_ms // 1000 if duration_ms is not None else 0
             release_date_str = attrs.get('releaseDate')
+            # Album downloads should use the album release date for all tracks.
+            album_release_date = kwargs.get('album_release_date')
+            if album_release_date:
+                release_date_str = album_release_date
             year = self._extract_year(release_date_str)
             explicit = attrs.get('contentRating') == 'explicit'
             
@@ -2217,7 +2221,8 @@ class ModuleInterface:
                 
             album_artist = attrs.get('artistName', '')
             cover_url = self._get_cover_url(attrs.get('artwork', {}).get('url'))
-            release_year = self._extract_year(attrs.get('releaseDate'))
+            album_release_date = attrs.get('releaseDate')
+            release_year = self._extract_year(album_release_date)
             
             # Extract record label, copyright and UPC (Barcode) from album attributes
             record_label = attrs.get('recordLabel')
@@ -2302,7 +2307,7 @@ class ModuleInterface:
                 label=record_label,
                 upc=upc,
                 tracks=tracks_out,
-                track_extra_kwargs={**kwargs, 'country': country}
+                track_extra_kwargs={**kwargs, 'country': country, 'album_release_date': album_release_date}
             )
             
         except Exception as e:
