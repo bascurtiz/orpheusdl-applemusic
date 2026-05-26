@@ -2307,6 +2307,7 @@ class ModuleInterface:
                 label=record_label,
                 upc=upc,
                 tracks=tracks_out,
+                expected_track_count=int(attrs['trackCount']) if attrs.get('trackCount') is not None else None,
                 track_extra_kwargs={**kwargs, 'country': country, 'album_release_date': album_release_date}
             )
             
