@@ -1,5 +1,6 @@
 import datetime
 from dataclasses import dataclass
+from typing import Any
 
 from .enums import MediaFileFormat, MediaRating, MediaType
 
@@ -106,10 +107,10 @@ class MediaTags:
 
 @dataclass
 class PlaylistTags:
-    playlist_artist: str = None
+    artist: str = None
     playlist_id: int = None
-    playlist_title: str = None
-    playlist_track: int = None
+    title: str = None
+    track: int = None
 
 
 @dataclass
@@ -121,7 +122,9 @@ class StreamInfo:
     codec: str = None
     width: int = None
     height: int = None
-    legacy: bool = None
+    drm_free: bool = False
+    use_cenc: bool = False
+    use_single_content_key: bool = True
 
 
 @dataclass
@@ -142,3 +145,41 @@ class DecryptionKey:
 class DecryptionKeyAv:
     video_track: DecryptionKey = None
     audio_track: DecryptionKey = None
+
+
+@dataclass
+class Cover:
+    template_url: str = None
+    file_extension: str = None
+    url: str = None
+
+
+@dataclass
+class AppleMusicMedia:
+    media_id: str
+    is_library: bool = False
+    index: int = 0
+    total: int = 0
+    partial: bool = True
+    media_metadata: dict | None = None
+    error: BaseException | None = None
+    playlist_metadata: dict | None = None
+    playlist_tags: PlaylistTags | None = None
+    extra_tags: dict | None = None
+    cover: Cover | None = None
+    lyrics: Lyrics | None = None
+    tags: MediaTags | None = None
+    stream_info: StreamInfoAv | None = None
+    decryption_key: DecryptionKeyAv | None = None
+
+
+@dataclass
+class AppleMusicUrlInfo:
+    storefront: str = None
+    type: str = None
+    slug: str = None
+    id: str = None
+    sub_id: str = None
+    library_storefront: str = None
+    library_type: str = None
+    library_id: str = None

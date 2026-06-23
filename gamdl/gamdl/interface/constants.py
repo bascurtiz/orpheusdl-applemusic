@@ -1,3 +1,5 @@
+import re
+
 MEDIA_TYPE_STR_MAP = {
     1: "Song",
     6: "Music Video",
@@ -8,8 +10,6 @@ MEDIA_RATING_STR_MAP = {
     1: "Explicit",
     2: "Clean",
 }
-
-LEGACY_SONG_CODECS = {"aac-legacy", "aac-he-legacy"}
 
 DRM_DEFAULT_KEY_MAPPING = {
     "urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed": (
@@ -59,4 +59,45 @@ UPLOADED_VIDEO_QUALITY_RANK = [
 IMAGE_FILE_EXTENSION_MAP = {
     "jpeg": ".jpg",
     "tiff": ".tif",
+}
+
+VALID_URL_PATTERN = re.compile(
+    r"https://(?:classical\.)?music\.apple\.com"
+    r"(?:"
+    r"/(?P<storefront>[a-z]{2})"
+    r"/(?P<type>artist|album|playlist|song|music-video|post)"
+    r"(?:/(?P<slug>[^\s/]+))?"
+    r"/(?P<id>[0-9]+|pl\.[0-9a-z]{32}|pl\.u-[a-zA-Z0-9]+)"
+    r"(?:\?i=(?P<sub_id>[0-9]+))?"
+    r"|"
+    r"(?:/(?P<library_storefront>[a-z]{2}))?"
+    r"/library/(?P<library_type>playlist|albums|songs|music-videos)"
+    r"/(?P<library_id>[pli]\.[a-zA-Z0-9]+)"
+    r")"
+)
+
+ARTIST_AUTO_SELECT_KEY_MAP = {
+    "main-albums": ("views", "full-albums"),
+    "compilation-albums": ("views", "compilation-albums"),
+    "live-albums": ("views", "live-albums"),
+    "singles-eps": ("views", "singles"),
+    "all-albums": ("relationships", "albums"),
+    "top-songs": ("views", "top-songs"),
+    "music-videos": ("relationships", "music-videos"),
+}
+ARTIST_AUTO_SELECT_STR_MAP = {
+    "main-albums": "Main Albums",
+    "compilation-albums": "Compilation Albums",
+    "live-albums": "Live Albums",
+    "singles-eps": "Singles & EPs",
+    "all-albums": "All Albums",
+    "top-songs": "Top Songs",
+    "music-videos": "Music Videos",
+}
+
+MEDIA_CODEC_FLAVOR_MAP = {
+    "aac-web": "28:ctrp256",
+    "aac-he-web": "32:ctrp64",
+    "aac-fps-web": "30:cbcp256",
+    "aac-he-fps-web": "34:cbcp64",
 }

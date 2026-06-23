@@ -1,41 +1,13 @@
 import asyncio
-import json
 import string
-import subprocess
 import typing
-
-import httpx
-
-
-def raise_for_status(httpx_response: httpx.Response, valid_responses: set[int] = {200}):
-    if httpx_response.status_code not in valid_responses:
-        raise httpx._exceptions.HTTPError(
-            f"HTTP error {httpx_response.status_code}: {httpx_response.text}"
-        )
-
-
-def safe_json(httpx_response: httpx.Response) -> dict | None:
-    try:
-        return httpx_response.json()
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return None
-
-
-async def get_response(
-    url: str,
-    valid_responses: set[int] = {200},
-) -> httpx.Response:
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.get(url)
-        raise_for_status(response, valid_responses)
-        return response
 
 
 async def async_subprocess(*args: str, silent: bool = False) -> None:
     if silent:
         additional_args = {
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
         }
     else:
         additional_args = {}
@@ -44,10 +16,20 @@ async def async_subprocess(*args: str, silent: bool = False) -> None:
         *args,
         **additional_args,
     )
-    await proc.communicate()
+
+    stdout, stderr = await proc.communicate()
 
     if proc.returncode != 0:
-        raise Exception(f'"{args[0]}" exited with code {proc.returncode}')
+        msg = (
+            f"Exited with code {proc.returncode}: {' '.join(str(arg) for arg in args)}"
+        )
+
+        if stdout:
+            msg += f"\nstdout:\n{stdout.decode()}"
+        if stderr:
+            msg += f"\nstderr:\n{stderr.decode()}"
+
+        raise Exception(msg)
 
 
 async def safe_gather(
@@ -64,22 +46,6 @@ async def safe_gather(
         *(bounded_task(task) for task in tasks),
         return_exceptions=True,
     )
-
-
-async def sequential_gather(
-    *tasks: typing.Awaitable[typing.Any],
-    interval: float = 0.5,
-) -> list[typing.Any]:
-    results = []
-    for i, task in enumerate(tasks):
-        try:
-            result = await task
-            results.append(result)
-        except Exception as e:
-            results.append(e)
-        if interval > 0 and i < len(tasks) - 1:
-            await asyncio.sleep(interval)
-    return results
 
 
 class CustomStringFormatter(string.Formatter):
