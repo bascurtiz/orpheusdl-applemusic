@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import re
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -9,9 +10,13 @@ import tempfile
 import platform
 import shutil
 from enum import Enum
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import ssl
 import urllib.request
+import asyncio
+import concurrent.futures
+import datetime
+import threading
 
 # Add gamdl to the path
 current_dir = Path(__file__).parent
@@ -21,10 +26,16 @@ if str(gamdl_path) not in sys.path:
 
 # Initialize gamdl availability check
 GAMDL_AVAILABLE = False
+LAST_GAMDL_ERROR = None
 
 def _lazy_import_gamdl():
     """Lazy import gamdl components to avoid conflicts with GUI patches"""
-    global GAMDL_AVAILABLE, AppleMusicApi, ItunesApi, GamdlSongCodec, GamdlRemuxMode, GamdlDownloadMode, Downloader, DownloaderSong, LEGACY_CODECS, DownloaderSongLegacy
+    global GAMDL_AVAILABLE, LAST_GAMDL_ERROR, AppleMusicApi, ItunesApi, WrapperApi, GamdlSongCodec, GamdlDownloadMode, \
+        AppleMusicDownloader, AppleMusicBaseDownloader, AppleMusicSongDownloader, \
+        AppleMusicMusicVideoDownloader, AppleMusicUploadedVideoDownloader, \
+        AppleMusicBaseInterface, AppleMusicInterface, AppleMusicSongInterface, \
+        AppleMusicMusicVideoInterface, AppleMusicUploadedVideoInterface, AppleMusicMedia, \
+        SyncedLyricsFormat
     
     if GAMDL_AVAILABLE:
         return True
@@ -46,8 +57,11 @@ def _lazy_import_gamdl():
         'click',
         'colorama',
         'InquirerPy',
+        'inquirerpy',
         'InquirerPy.base',
-        'InquirerPy.base.control'
+        'InquirerPy.base.control',
+        'inquirerpy.base',
+        'inquirerpy.base.control'
     ]
     for mod_name in modules_to_mock:
         if mod_name not in sys.modules:
@@ -62,13 +76,16 @@ def _lazy_import_gamdl():
     
     # Debug: Check if gamdl directory exists
     if not gamdl_path.exists():
-        print(f"[Apple Music Error] gamdl directory not found at: {gamdl_path}")
+        print(f"[Apple Music Error] gamdl directory NOT found at: {gamdl_path}")
+        globals()['LAST_GAMDL_ERROR'] = f"gamdl directory NOT found at: {gamdl_path}"
         return False
     
     # Debug: Check if key files exist
-    apple_music_api_file = gamdl_path / "gamdl" / "apple_music_api.py"
+    apple_music_api_file = gamdl_path / "gamdl" / "api" / "apple_music.py"
     if not apple_music_api_file.exists():
-        print(f"[Apple Music Error] apple_music_api.py not found at: {apple_music_api_file}")
+        msg = f"apple_music.py NOT found at: {apple_music_api_file}"
+        print(f"[Apple Music Error] {msg}")
+        globals()['LAST_GAMDL_ERROR'] = msg
         return False
     
     # Debug: Show path info
@@ -98,68 +115,227 @@ def _lazy_import_gamdl():
                 def __init__(self, *args, **kwargs):
                     pass
             
-            print(f"[Apple Music Debug] Temporarily replacing patched subprocess.Popen with class wrapper for yt-dlp compatibility")
+            if os.environ.get('GAMDL_DEBUG') == 'true':
+                print("[Apple Music Debug] Temporarily replacing patched subprocess.Popen with class wrapper for yt-dlp compatibility")
             subprocess_module.Popen = TempPopen
             original_popen = current_popen
     
     try:
-        from gamdl.apple_music_api import AppleMusicApi
-        from gamdl.itunes_api import ItunesApi  
-        from gamdl.enums import SongCodec as GamdlSongCodec, RemuxMode as GamdlRemuxMode, DownloadMode as GamdlDownloadMode
-        from gamdl.downloader import Downloader
-        from gamdl.downloader_song import DownloaderSong
-        from gamdl.constants import LEGACY_CODECS
-        from gamdl.downloader_song_legacy import DownloaderSongLegacy
-        
-        GAMDL_AVAILABLE = True
+        from gamdl.api import AppleMusicApi, ItunesApi, WrapperApi
+        from gamdl.downloader import (
+            AppleMusicBaseDownloader,
+            AppleMusicDownloader,
+            AppleMusicMusicVideoDownloader,
+            AppleMusicSongDownloader,
+            AppleMusicUploadedVideoDownloader,
+        )
+        from gamdl.interface import (
+            AppleMusicBaseInterface,
+            AppleMusicInterface,
+            AppleMusicMusicVideoInterface,
+            AppleMusicSongInterface,
+            AppleMusicUploadedVideoInterface,
+            AppleMusicMedia,
+        )
+        from gamdl.interface.enums import (
+            SongCodec as GamdlSongCodec,
+            SyncedLyricsFormat
+        )
+        from gamdl.downloader.enums import (
+            DownloadMode as GamdlDownloadMode,
+        )
+
+        globals()['AppleMusicApi'] = AppleMusicApi
+        globals()['ItunesApi'] = ItunesApi
+        globals()['WrapperApi'] = WrapperApi
+        globals()['GamdlSongCodec'] = GamdlSongCodec
+        globals()['GamdlDownloadMode'] = GamdlDownloadMode
+        globals()['AppleMusicDownloader'] = AppleMusicDownloader
+        globals()['AppleMusicBaseDownloader'] = AppleMusicBaseDownloader
+        globals()['AppleMusicSongDownloader'] = AppleMusicSongDownloader
+        globals()['AppleMusicMusicVideoDownloader'] = AppleMusicMusicVideoDownloader
+        globals()['AppleMusicUploadedVideoDownloader'] = AppleMusicUploadedVideoDownloader
+        globals()['AppleMusicBaseInterface'] = AppleMusicBaseInterface
+        globals()['AppleMusicInterface'] = AppleMusicInterface
+        globals()['AppleMusicSongInterface'] = AppleMusicSongInterface
+        globals()['AppleMusicMusicVideoInterface'] = AppleMusicMusicVideoInterface
+        globals()['AppleMusicUploadedVideoInterface'] = AppleMusicUploadedVideoInterface
+        globals()['AppleMusicMedia'] = AppleMusicMedia
+        globals()['SyncedLyricsFormat'] = SyncedLyricsFormat
+
+        class OrpheusAppleMusicSongInterface(AppleMusicSongInterface):
+            def __init__(self, base: AppleMusicBaseInterface, quality_tier: QualityEnum = None, debug: bool = False, **kwargs):
+                super().__init__(base, **kwargs)
+                self.quality_tier = quality_tier
+                self._debug = debug
+
+            def _get_playlist_from_codec_enhanced(self, m3u8_data: dict, codec: 'GamdlSongCodec') -> dict | None:
+                from gamdl.interface.constants import SONG_CODEC_REGEX_MAP
+                import re
+                
+                # Check for Atmos first with a more inclusive logic if it's the requested codec
+                if codec.value == 'atmos':
+                    # First try standard "atmos" regex
+                    matching_playlists = [
+                        playlist for playlist in m3u8_data["playlists"]
+                        if re.fullmatch(SONG_CODEC_REGEX_MAP['atmos'], playlist["stream_info"]["audio"])
+                    ]
+                    
+                    # If no "atmos" found, try "ac3" as a fallback for Atmos/Surround
+                    if not matching_playlists:
+                        if self._debug:
+                            print(f"[Apple Music Debug] No 'audio-atmos' found. Trying 'audio-ac3' as fallback for Atmos/Surround.")
+                        matching_playlists = [
+                            playlist for playlist in m3u8_data["playlists"]
+                            if re.fullmatch(SONG_CODEC_REGEX_MAP['ac3'], playlist["stream_info"]["audio"])
+                        ]
+                else:
+                    matching_playlists = [
+                        playlist
+                        for playlist in m3u8_data["playlists"]
+                        if re.fullmatch(
+                            SONG_CODEC_REGEX_MAP[codec.value], playlist["stream_info"]["audio"]
+                        )
+                    ]
+
+                if not matching_playlists:
+                    if self._debug:
+                        flavors = [p["stream_info"]["audio"] for p in m3u8_data["playlists"]]
+                        print(f"[Apple Music Debug] No matching playlist for codec '{codec.value}'. Available flavors: {flavors}")
+                    return None
+
+                # Filter for LOSSLESS (Standard Lossless) to avoid HI-RES (96k+)
+                
+                if codec.value == "alac" and (self.quality_tier == QualityEnum.LOSSLESS or self.quality_tier == QualityEnum.HIFI):
+                    # We always want to check for Hi-Res if we haven't explicitly requested it via HIFI+SomeOtherFlag?
+                    # Wait, if the user hit ALAC, they likely want standard lossless.
+                    # If they hit HI-RES, they want Hi-Res.
+                    
+                    # If quality_tier is LOSSLESS, we definitely want to limit to 48k.
+                    # If quality_tier is HIFI, we usually want max, UNLESS it's an "ALAC" button that passes HIFI?
+                    
+                    # Let's check bitwise for LOSSLESS specifically.
+                    if self.quality_tier == QualityEnum.LOSSLESS:
+                        filtered = []
+                        for p in matching_playlists:
+                            audio_id = p["stream_info"]["audio"] 
+                            try:
+                                parts = audio_id.split('-')
+                                if len(parts) >= 4:
+                                    sample_rate = int(parts[-2])
+                                    if sample_rate <= 48000:
+                                        filtered.append(p)
+                                else:
+                                    filtered.append(p)
+                            except:
+                                filtered.append(p)
+                        
+                        if filtered:
+                            matching_playlists = filtered
+                        elif self.quality_tier == QualityEnum.LOSSLESS:
+                            print(f"[Apple Music Debug] No playlists matched sample_rate <= 48000. Returning best available.")
+
+                return max(
+                    matching_playlists,
+                    key=lambda x: x["stream_info"]["average_bandwidth"],
+                )
+
+        globals()['OrpheusAppleMusicSongInterface'] = OrpheusAppleMusicSongInterface
+        globals()['GAMDL_AVAILABLE'] = True
+        LAST_GAMDL_ERROR = None
         return True
-        
     except ImportError as e:
-        print(f"[Apple Music] Warning: Could not import gamdl components: {e}")
-        print("[Apple Music] Module will run with limited functionality")
+        error_msg = f"ImportError: {e}"
+        print(f"[Apple Music] Warning: Could not import gamdl components: {error_msg}")
+        if os.environ.get('GAMDL_DEBUG') == 'true':
+            import traceback
+            traceback.print_exc()
+        globals()['LAST_GAMDL_ERROR'] = error_msg
         return False
     except Exception as e:
-        print(f"[Apple Music] Error during gamdl import: {e}")
+        error_msg = f"{type(e).__name__}: {e}"
+        print(f"[Apple Music] Error during gamdl import: {error_msg}")
         import traceback
         traceback.print_exc()
+        globals()['LAST_GAMDL_ERROR'] = error_msg
         return False
     finally:
         # Restore the patched subprocess.Popen if we temporarily changed it
         if original_popen and subprocess_module:
-            print(f"[Apple Music Debug] Restoring patched subprocess.Popen")
+            if os.environ.get('GAMDL_DEBUG') == 'true':
+                print("[Apple Music Debug] Restoring patched subprocess.Popen")
             subprocess_module.Popen = original_popen
 
 # Initialize global variables for lazy imports
 AppleMusicApi = None
-ItunesApi = None  
+ItunesApi = None
+WrapperApi = None
 GamdlSongCodec = None
-GamdlRemuxMode = None
 GamdlDownloadMode = None
-Downloader = None
-DownloaderSong = None
-LEGACY_CODECS = None
-DownloaderSongLegacy = None
+AppleMusicDownloader = None
+AppleMusicBaseDownloader = None
+AppleMusicSongDownloader = None
+AppleMusicMusicVideoDownloader = None
+AppleMusicUploadedVideoDownloader = None
+AppleMusicBaseInterface = None
+AppleMusicInterface = None
+AppleMusicSongInterface = None
+AppleMusicMusicVideoInterface = None
+AppleMusicUploadedVideoInterface = None
+AppleMusicMedia = None
+SyncedLyricsFormat = None
 
 from utils.models import *
-from utils.utils import create_temp_filename, download_to_temp
+from utils.utils import (
+    artists_from_apple_attrs,
+    create_temp_filename,
+    download_to_temp,
+    format_album_artist_tag,
+    resolve_album_artist_tag,
+)
 
 from utils.models import (
     TrackInfo, AlbumInfo, ArtistInfo, PlaylistInfo, LyricsInfo, 
     DownloadTypeEnum, QualityEnum,
     DownloadEnum as OrpheusDownloadEnum,
     ModuleInformation, ModuleModes, ManualEnum, Tags, CodecEnum,
-    TrackDownloadInfo
+    TrackDownloadInfo, ModuleController, OrpheusOptions,
+    CreditsInfo, CoverInfo, CoverOptions, ImageFileTypeEnum
 )
 from utils.exceptions import AuthenticationError, DownloadError, TrackUnavailableError
 
+DEFAULT_WRAPPER_URL = "127.0.0.1"
+_LEGACY_WRAPPER_HOSTS = frozenset({
+    "127.0.0.1:10020",
+    "localhost:10020",
+    "0.0.0.0:10020",
+})
+# wrapper-v2 worker listens on 18080 inside the container; the public HTTP API is on port 80.
+_WRONG_WRAPPER_PUBLIC_PORTS = frozenset({
+    "127.0.0.1:18080",
+    "localhost:18080",
+    "0.0.0.0:18080",
+})
+
+def normalize_wrapper_url(url: str | None) -> str:
+    """Normalize wrapper-v2 base URL (HTTP on port 80 by default)."""
+    normalized = (url or "").strip() or DEFAULT_WRAPPER_URL
+    bare = normalized.replace("http://", "").replace("https://", "").rstrip("/")
+    if bare in _LEGACY_WRAPPER_HOSTS or bare in _WRONG_WRAPPER_PUBLIC_PORTS:
+        bare = DEFAULT_WRAPPER_URL
+    elif bare.endswith(":18080") or bare.endswith(":10020"):
+        bare = bare.rsplit(":", 1)[0] or DEFAULT_WRAPPER_URL
+    return f"http://{bare}".rstrip("/")
+
 module_information = ModuleInformation(
     service_name='Apple Music',
-    module_supported_modes=ModuleModes.download,
+    module_supported_modes=ModuleModes.download | ModuleModes.lyrics | ModuleModes.covers | ModuleModes.credits,
     session_settings={
         'cookies_path': './config/cookies.txt',
         'language': 'en-US',
-        'codec': 'aac',
-        'quality': 'high'
+        'use_wrapper': False,
+        'wrapper_decrypt_ip': DEFAULT_WRAPPER_URL,
+        'wrapper_restart_command': ''
     },
     netlocation_constant='music.apple',
     test_url='https://music.apple.com/us/album/1989-taylors-version/1708308989',
@@ -188,20 +364,85 @@ def suppress_gamdl_debug():
         devnull.close()
         sys.stdout = original_stdout
 
+def _get_original_stdout():
+    """Helper to get the original stdout even if redirected"""
+    return getattr(threading.current_thread(), '_original_stdout', sys.stdout)
+
+_gamdl_structlog_sink = None
+
+def _gamdl_drop_processor(logger, method_name, event_dict):
+    """Drop all structlog events (used when debug is off)."""
+    import structlog
+    raise structlog.DropEvent
+
+def _configure_gamdl_structlog(debug: bool) -> None:
+    """Silence gamdl structlog output unless Apple Music / global debug is enabled."""
+    global _gamdl_structlog_sink
+    try:
+        import logging
+        import structlog
+    except ImportError:
+        return
+
+    if _gamdl_structlog_sink is None:
+        _gamdl_structlog_sink = open(os.devnull, 'w')
+
+    if debug:
+        structlog.configure(
+            processors=[
+                structlog.contextvars.merge_contextvars,
+                structlog.processors.add_log_level,
+                structlog.dev.ConsoleRenderer(),
+            ],
+            wrapper_class=structlog.make_filtering_bound_logger(logging.DEBUG),
+            logger_factory=structlog.PrintLoggerFactory(file=_get_original_stdout()),
+            cache_logger_on_first_use=False,
+        )
+        return
+
+    structlog.configure(
+        processors=[_gamdl_drop_processor],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL),
+        logger_factory=structlog.PrintLoggerFactory(file=_gamdl_structlog_sink),
+        cache_logger_on_first_use=False,
+    )
+
+# Default to quiet until a module instance syncs with user settings.
+_configure_gamdl_structlog(False)
+
 class ModuleInterface:
     def __init__(self, module_controller: ModuleController):
         self.exception = module_controller.module_error
         settings = module_controller.module_settings
         self.module_controller = module_controller
         self.settings = settings
+        self.printer = module_controller.printer_controller
         self.gamdl_downloader_song = None
         self.gamdl_downloader = None # To store the gamdl.Downloader instance
         self.is_authenticated = False  # Default to not authenticated
         self._using_rich_tagging = False  # Track when we're using gamdl's rich tagging to prevent OrpheusDL overwriting
-        self._debug = settings.get('debug', False)  # Add debug setting
+        # Consolidate debug setting from module-specific and global settings
+        self._debug = settings.get('debug', False) or module_controller.orpheus_options.debug_mode
+        self.quality_tier = None
+        
+        # Lock for synchronizing async operations across threads
+        self._lock = threading.Lock()
+        
+        # Persistent event loop and thread for async operations to avoid asyncio.run() overhead
+        self._loop_ready = threading.Event()
+        self.loop = None
+        self.loop_thread = None
+        self._start_background_loop()
+        
+        # Cache for wrapper health to avoid redundant timeouts
+        self._wrapper_offline = False
+        self._last_gamdl_init_error = None
         
         if not _lazy_import_gamdl():
-            raise self.exception("gamdl components not available - please check installation")
+            detail = f": {LAST_GAMDL_ERROR}" if LAST_GAMDL_ERROR else ""
+            raise self.exception(f"gamdl components not available - please check installation{detail}")
+
+        self._refresh_debug_mode()
         
         # Get cookies path from settings
         cookies_path = self.settings.get('cookies_path', './config/cookies.txt')
@@ -215,48 +456,16 @@ class ModuleInterface:
                     print(f"[Apple Music Warning] Cookies file not found at specified/default path: {cookies_path}. Downloads may fail if authentication is required.")
                 cookies_path = None
         
+        if self._debug:
+            print(f"[Apple Music Debug] Using cookies_path: {os.path.abspath(cookies_path) if cookies_path else 'None'}")
+        
         # Initialize gamdl APIs
         try:
-            # Control gamdl debug output via environment variable
-            if not self._debug:
-                os.environ['GAMDL_DEBUG'] = 'false'
-            
-            with suppress_gamdl_debug():
-                self.apple_music_api = AppleMusicApi(
-                    cookies_path=Path(cookies_path) if cookies_path else None,
-                    language=self.settings.get('language', 'en-US')
-                )
-                
-                self.itunes_api = ItunesApi(
-                    self.apple_music_api.storefront if self.apple_music_api else 'us', # Fallback storefront
-                    self.apple_music_api.language if self.apple_music_api else 'en-US'  # Fallback language
-                )
-            
-            # Check for authentication token after initialization and set authentication status
-            if self.apple_music_api and self.apple_music_api.session.headers.get('Media-User-Token'):
-                self.is_authenticated = True
-                if self._debug:
-                    print("[Apple Music Debug] Successfully authenticated with Media-User-Token.")
-            elif self._debug:
-                print("[Apple Music Warning] Not authenticated. Media-User-Token not found. Downloads will likely fail.")
-                if self.apple_music_api and self.apple_music_api.session:
-                    # Log existing cookie keys for easier debugging
-                    cookie_keys = list(self.apple_music_api.session.cookies.get_dict().keys())
-                    print(f"[Apple Music Debug] Cookie keys loaded: {cookie_keys}")
-                print('[Apple Music Debug] Tip: Ensure "cookies.txt" is in the Netscape format, e.g., by using a browser extension to export it.')
+            self._run_async(self._setup_api_clients, allow_reinit=False)
+        except Exception as e:
+            print(f"[Apple Music Error] Initial initialization failed: {e}")
+            # We'll try again during the first actual operation
 
-            if self._debug and self.apple_music_api:
-                print(f"[Apple Music Debug] Initialized with storefront: {self.apple_music_api.storefront}")
-            
-            # Map codec setting to gamdl enum
-            codec_setting = self.settings.get('codec', 'aac').lower()
-            if codec_setting == 'aac':
-                self.song_codec = GamdlSongCodec.AAC_LEGACY  # Use AAC_LEGACY to match standalone gamdl default
-            elif codec_setting == 'alac':
-                self.song_codec = GamdlSongCodec.ALAC
-            else:
-                self.song_codec = GamdlSongCodec.AAC_LEGACY  # Default to AAC_LEGACY
-                
         except Exception as e:
             # Check for SSL certificate errors
             if self._is_ssl_certificate_error(e):
@@ -279,23 +488,315 @@ class ModuleInterface:
                         f"Original error: {e}"
                     )
             else:
+                if self._debug:
+                    print(f"[Apple Music Error] API Setup failed: {e}")
                 raise self.exception(f"Failed to initialize Apple Music API: {e}")
+
+    def _refresh_debug_mode(self):
+        """Sync gamdl logging with current module/global debug settings."""
+        self._debug = bool(
+            self.settings.get('debug', False)
+            or getattr(self.module_controller.orpheus_options, 'debug_mode', False)
+        )
+        os.environ['GAMDL_DEBUG'] = 'true' if self._debug else 'false'
+        _configure_gamdl_structlog(self._debug)
+
+    def _gamdl_quiet(self):
+        """Context manager: suppress gamdl stdout noise when debug is off."""
+        return nullcontext() if self._debug else suppress_gamdl_debug()
+
+    def _start_background_loop(self):
+        """Start or restart the background event loop thread."""
+        with self._lock:
+            if self.loop_thread and self.loop_thread.is_alive() and self.loop and not self.loop.is_closed():
+                if self._debug:
+                    print(f"[Apple Music Debug] Background loop already healthy (Loop ID: {id(self.loop)})")
+                return
+            
+            # Clear caches whenever the loop starts or restarts to avoid "different event loop" errors
+            self._clear_gamdl_caches()
+            
+            # Null out API clients and interfaces to force re-initialization in the new loop
+            self.apple_music_api = None
+            self.itunes_api = None
+            self.wrapper_api = None
+            self.gamdl_base_interface = None
+            self.gamdl_interface = None
+            self.gamdl_song_interface = None
+            
+            self._wrapper_offline = False 
+            
+            if self._debug:
+                print(f"[Apple Music Debug] Starting background event loop thread...")
+                
+            self._loop_ready.clear()
+            self.loop_thread = threading.Thread(target=self._run_loop, daemon=True, name="AppleMusicLoop")
+            self.loop_thread.start()
+            # Wait up to 5 seconds for the loop to start
+            if not self._loop_ready.wait(5):
+                 print("[Apple Music Error] Background loop failed to start within 5 seconds.")
+            elif self._debug:
+                 print(f"[Apple Music Debug] Background loop started successfully (Loop ID: {id(self.loop)})")
+
+    def _run_loop(self):
+        """Internal loop runner for the background thread."""
+        try:
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+            if self._debug:
+                print(f"[Apple Music Debug] Background loop created and set. Loop id: {id(self.loop)}")
+            self._loop_ready.set()
+            self.loop.run_forever()
+        except Exception as e:
+            print(f"[Apple Music Error] Background loop thread crashed: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            if self._debug:
+                print("[Apple Music Debug] Background loop thread exiting...")
+            self._loop_ready.clear()
+            # Don't close it here if we want it to persist even if run_forever returns (which it shouldn't)
+            pass
+
+    def _debug_print(self, msg):
+        """Helper to print debug messages even when stdout is redirected to devnull"""
+        if self._debug:
+            orig = _get_original_stdout()
+            try:
+                orig.write(f"{msg}\n")
+                orig.flush()
+            except:
+                # Fallback to standard print if write fails
+                print(msg)
+
+    def _run_async(self, func, *args, **kwargs):
+        """Run an async function or lambda in the internal event loop thread and return the result."""
+        allow_reinit = kwargs.pop('allow_reinit', True)
+        
+        # Detect if we're already running in the background thread to avoid deadlocks
+        if threading.current_thread() == self.loop_thread:
+            # We are already in the background loop thread. 
+            # We cannot call future.result() here as it would block the loop.
+            # We must call the function directly.
+            if asyncio.iscoroutinefunction(func):
+                # Nested async calls from within the loop thread should be awaited directly.
+                # Since _run_async is sync, this is a bit of a hack, but we'll try to run it.
+                if self._debug:
+                    print("[Apple Music Warning] Nested async _run_async call detected! Attempting to run in current loop...")
+                # Note: This will only work if called from a context that can block or if we use run_coroutine_threadsafe correctly.
+                # However, for our self-healing logic, we should try to avoid this.
+                return asyncio.run_coroutine_threadsafe(func(*args, **kwargs), self.loop).result()
+            else:
+                return func(self, *args, **kwargs)
+
+        target_sf = kwargs.pop('storefront', None)
+        
+        for attempt in range(4): # Increased to 4 attempts to allow for 3 retries with backoff
+            # 1. Ensure thread is alive and loop is valid
+            if not self.loop_thread or not self.loop_thread.is_alive() or not self.loop or self.loop.is_closed():
+                if self._debug and attempt > 0:
+                    print(f"[Apple Music Debug] Retrying _run_async (attempt {attempt+1}) due to loop closure/failure...")
+                self._start_background_loop()
+            
+            async def wrapper():
+                # If APIs are missing, initialize them first (self-healing)
+                if allow_reinit and not getattr(self, 'apple_music_api', None):
+                    if self._debug:
+                        print("[Apple Music Debug] Re-establishing API clients for operation...")
+                    await self._setup_api_clients()
+
+                am_api = getattr(self, 'apple_music_api', None)
+                it_api = getattr(self, 'itunes_api', None)
+                
+                sf = target_sf or getattr(am_api, 'storefront', None) or getattr(self, 'account_storefront', 'us')
+                
+                try:
+                    # Update storefront if different
+                    if am_api and sf and getattr(am_api, 'storefront', None) != sf:
+                        am_api.storefront = sf
+                    if it_api and sf and getattr(am_api, 'storefront', None) != sf:
+                        it_api.storefront = sf
+                    
+                    # Run the target function
+                    if asyncio.iscoroutinefunction(func):
+                        return await func(*args, **kwargs)
+                    else:
+                        res = func(self, *args, **kwargs)
+                        if asyncio.iscoroutine(res):
+                            return await res
+                        return res
+                except Exception as inner_e:
+                    # Propagate inner exceptions
+                    return inner_e
+
+            try:
+                # 2. Schedule and wait
+                if self._debug:
+                    print(f"[Apple Music Debug] Scheduling coroutine on loop {id(self.loop)} (Thread: {self.loop_thread.name if self.loop_thread else 'None'})")
+                
+                future = asyncio.run_coroutine_threadsafe(wrapper(), self.loop)
+                if self._debug:
+                    print(f"[Apple Music Debug] Scheduled coroutine. Waiting for result (Timeout: 1200s)...")
+                result = future.result(timeout=1200) 
+                if self._debug:
+                    print(f"[Apple Music Debug] Coroutine finished with result type: {type(result).__name__}")
+                
+                # 3. Handle propagated exceptions
+                if isinstance(result, Exception):
+                    # Handle Apple Music API Rate Limits (429)
+                    is_rate_limit = False
+                    # Check specifically for status code 429 if it's an ApiError (from gamdl)
+                    if 'ApiError' in type(result).__name__ and getattr(result, 'status_code', None) == 429:
+                        is_rate_limit = True
+                    # Fallback check for other error types that might indicate rate limiting
+                    elif 'TooManyRequests' in type(result).__name__:
+                        is_rate_limit = True
+
+                    if is_rate_limit and attempt < 3:
+                        backoff_times = [2, 5, 10]
+                        wait_time = backoff_times[attempt]
+                        if self._debug:
+                            print(f"[Apple Music Warning] Rate limit (429) detected. Retrying in {wait_time}s... (Attempt {attempt+1}/4)")
+                        time.sleep(wait_time)
+                        continue
+
+                    result_str = str(result)
+                    if "Multiple cookies exist with name=" in result_str and attempt < 3:
+                        cookie_name = result_str.split("name=")[-1].strip().strip("'\"")
+                        if self._debug:
+                            print(f"[Apple Music Warning] Cookie conflict detected for '{cookie_name}'. Attempting self-healing...")
+                        try:
+                            am_api = getattr(self, 'apple_music_api', None)
+                            if am_api and hasattr(am_api, 'client') and hasattr(am_api.client, 'cookies'):
+                                jar = am_api.client.cookies.jar
+                                cookies_to_remove = [c for c in jar if c.name == cookie_name]
+                                for c in cookies_to_remove:
+                                    try:
+                                        jar.clear(c.domain, c.path, c.name)
+                                    except: pass
+                                if self._debug:
+                                    print(f"[Apple Music Debug] Cleared {len(cookies_to_remove)} conflicting '{cookie_name}' cookies.")
+                        except Exception as ce:
+                            if self._debug:
+                                print(f"[Apple Music Error] Failed to clear conflicting cookies: {ce}")
+                        continue
+
+                    if "closed" in result_str.lower() and isinstance(result, RuntimeError):
+                        if self._debug:
+                            print(f"[Apple Music Warning] background thread returned closed loop error: {result}")
+                        self.loop = None
+                        self.loop_thread = None
+                        continue
+                    raise result
+                return result
+                
+            except (RuntimeError, TimeoutError, concurrent.futures.TimeoutError, AttributeError) as e:
+                # If it's an AttributeError involving 'send', it's likely a dead transport on a closed loop
+                is_dead_transport = isinstance(e, AttributeError) and ('send' in str(e) or 'recv' in str(e))
+                
+                if self._debug:
+                    print(f"[Apple Music Debug] _run_async caught {type(e).__name__}: {e}")
+                
+                if isinstance(e, RuntimeError) or is_dead_transport:
+                    # Force restart loop and APIs on next attempt
+                    with self._lock:
+                        if self.loop:
+                            try: self.loop.stop()
+                            except: pass
+                        self.loop = None
+                        if hasattr(self, 'apple_music_api'): self.apple_music_api = None
+                
+                if attempt == 3: # Last attempt (4 total)
+                    raise e
+                continue
+        
+        raise RuntimeError("Apple Music: Failed to execute async operation after 4 attempts (including rate limit retries).")
+
+    def _clear_gamdl_caches(self):
+        """Clear alru_cache in gamdl interfaces to prevent loop-mismatch errors"""
+        interfaces = [
+            getattr(self, 'gamdl_base_interface', None),
+            getattr(self, 'gamdl_interface', None),
+            getattr(self, 'gamdl_song_interface', None),
+        ]
+        
+        self.gamdl_base_interface = None
+        self.gamdl_interface = None
+        self.gamdl_song_interface = None
+        self.gamdl_song_downloader = None
+        self.gamdl_downloader = None
+        self.gamdl_downloader_song = None
+        self.gamdl_base_downloader = None
+        
+        interface_classes = []
+        if GAMDL_AVAILABLE:
+            try:
+                from gamdl.interface.base import AppleMusicBaseInterface
+                from gamdl.interface.interface import AppleMusicInterface
+                from gamdl.interface.song import AppleMusicSongInterface
+                interface_classes = [AppleMusicBaseInterface, AppleMusicInterface, AppleMusicSongInterface]
+            except Exception:
+                pass
+
+        for obj in (interfaces + interface_classes):
+            if obj:
+                for attr_name in dir(obj):
+                    try:
+                        attr = getattr(obj, attr_name)
+                        if hasattr(attr, 'cache_clear'):
+                            # async-lru check: reset the loop to None before clearing
+                            # to avoid "alru_cache is not safe to use across event loops" RuntimeError.
+                            actual_func = getattr(attr, '__func__', attr)
+                            if hasattr(actual_func, '_loop'):
+                                actual_func._loop = None
+                            attr.cache_clear()
+                    except:
+                        pass
 
     def _set_storefront(self, country_code: Optional[str]):
         """Temporarily sets the storefront for API calls if a country code is provided."""
         if not country_code:
             return
 
-        country_code_upper = country_code.upper()
-        if self.apple_music_api and self.apple_music_api.storefront != country_code_upper:
+        country_code_lower = country_code.lower()
+        if self.apple_music_api and self.apple_music_api.storefront != country_code_lower:
             if self._debug:
-                print(f"[Apple Music Debug] Switching storefront from {self.apple_music_api.storefront} to {country_code_upper}")
+                print(f"[Apple Music Debug] Switching storefront from {self.apple_music_api.storefront} to {country_code_lower}")
             
             # Update storefront for both Apple Music and iTunes APIs
-            self.apple_music_api.storefront = country_code_upper
+            self.apple_music_api.storefront = country_code_lower
             if self.itunes_api:
-                # gamdl's ItunesApi seems to expect lowercase for storefront
-                self.itunes_api.storefront = country_code.lower()
+                self.itunes_api.storefront = country_code_lower
+
+    def _get_gamdl_codec(self, codec_str: str):
+        """Map codec string to gamdl SongCodec enum"""
+        if not codec_str:
+            return GamdlSongCodec.AAC_WEB
+            
+        codec_lower = codec_str.lower()
+        if codec_lower in ('aac', 'aac-legacy', 'aac-web'):
+            return GamdlSongCodec.AAC_WEB
+        elif codec_lower == 'alac' or 'alac-' in codec_lower:
+            return GamdlSongCodec.ALAC
+        elif codec_lower == 'atmos':
+            return GamdlSongCodec.ATMOS
+        else:
+            return GamdlSongCodec.AAC_WEB
+
+    def _quality_to_codec(self, quality_tier: QualityEnum):
+        """Map OrpheusDL QualityEnum to gamdl SongCodec enum"""
+        if not quality_tier:
+            return None
+            
+        if quality_tier & QualityEnum.ATMOS:
+            return GamdlSongCodec.ATMOS
+        elif quality_tier & (QualityEnum.LOSSLESS | QualityEnum.HIFI):
+            return GamdlSongCodec.ALAC
+        elif quality_tier & QualityEnum.MINIMUM:
+            return GamdlSongCodec.AAC_WEB
+        else:
+            # LOW, MEDIUM, HIGH all map to standard AAC 256
+            return GamdlSongCodec.AAC_WEB
 
     def _is_ssl_certificate_error(self, exception):
         """Check if an exception is related to SSL certificate verification"""
@@ -309,142 +810,212 @@ class ModuleInterface:
         ]
         return any(indicator in error_str for indicator in ssl_error_indicators)
 
-    def _initialize_gamdl_components(self):
+    def _get_wrapper_url(self) -> str:
+        return normalize_wrapper_url(self.settings.get('wrapper_decrypt_ip'))
 
-        print(f"[Apple Music] _initialize_gamdl_components CALLED. gamdl_downloader exists: {self.gamdl_downloader is not None}")
-        if not self.gamdl_downloader: # Check for the main Downloader instance
+    def _wrapper_display_url(self) -> str:
+        return self._get_wrapper_url().replace("http://", "").replace("https://", "")
 
-            print("[Apple Music] Initializing gamdl_downloader...")
+    def _wrapper_connection_error_message(self) -> str:
+        return (
+            f"Could not connect to the wrapper at {self._wrapper_display_url()}. "
+            "Make sure wrapper-v2 is running (docker compose up) and Use Wrapper is enabled."
+        )
+
+    def _wrapper_not_authenticated_message(self) -> str:
+        return (
+            "Wrapper is running but not logged in. Sign in to wrapper-v2 first "
+            f"(POST /login on {self._wrapper_display_url()}, or set WRAPPER_USERNAME/WRAPPER_PASSWORD in Docker)."
+        )
+
+    def _cookie_init_error_message(self, cookies_path, error: Exception) -> str:
+        cause = str(error).strip()
+        path = os.path.abspath(str(cookies_path))
+        if "media-user-token" in cause.lower():
+            return (
+                f'Apple Music cookies at "{path}" are missing the required "media-user-token" cookie. '
+                "Export fresh cookies from music.apple.com while logged in with an active Apple Music subscription."
+            )
+        return (
+            f'Failed to authenticate Apple Music with cookies at "{path}": {cause} '
+            "Ensure cookies.txt is in Netscape format and exported from music.apple.com."
+        )
+
+    def _wrapper_enabled(self) -> bool:
+        return bool(getattr(self, 'wrapper_api', None))
+
+    def _is_wrapper_auth_error(self, err_str: str) -> bool:
+        lowered = (err_str or "").lower()
+        return (
+            "not authenticated" in lowered
+            or "log in via the wrapper" in lowered
+            or "wrapper login requires 2fa" in lowered
+        )
+
+    @staticmethod
+    def _is_aac_stream_codec(codec_val) -> bool:
+        if not codec_val:
+            return False
+        c = str(codec_val).lower()
+        return 'aac' in c or 'mp4a' in c
+
+    @staticmethod
+    def _is_atmos_stream_codec(codec_val) -> bool:
+        if not codec_val:
+            return False
+        c = str(codec_val).lower()
+        return any(marker in c for marker in ('atmos', 'ec-3', 'ec3', 'eac3', 'eac-3', 'audio-ec3', 'audio-atmos'))
+
+    @staticmethod
+    def _is_alac_stream_codec(codec_val) -> bool:
+        if not codec_val:
+            return False
+        return 'alac' in str(codec_val).lower()
+
+    def _alac_requires_wrapper_message(self) -> str:
+        return "Make sure wrapper is running and enabled to download ALAC format."
+
+    @staticmethod
+    def _is_alac_license_restriction_error(err_str: str) -> bool:
+        """Detect Apple Music -1002 license errors that require the wrapper for ALAC."""
+        if not err_str:
+            return False
+        compact = err_str.replace(' ', '')
+        if '-1002' in err_str or '"status":-1002' in compact:
+            return True
+        lowered = err_str.lower()
+        if 'license exchange' in lowered and ('-1002' in err_str or '"status"' in err_str):
+            return True
+        if 'api error 200' in lowered and '-1002' in err_str:
+            return True
+        return False
+
+    def _maybe_raise_alac_wrapper_error(self, exc: Exception, local_effective_codec) -> None:
+        if local_effective_codec != GamdlSongCodec.ALAC:
+            return
+        if self._is_alac_license_restriction_error(str(exc)):
+            raise DownloadError(self._alac_requires_wrapper_message()) from exc
+
+    def _gamdl_init_failure_message(self, wrapper_requested: bool = False) -> str:
+        err = getattr(self, '_last_gamdl_init_error', None)
+        if err is not None:
+            err_str = str(err)
+            if self._is_wrapper_auth_error(err_str):
+                return self._wrapper_not_authenticated_message()
+            lowered = err_str.lower()
+            if any(token in lowered for token in (
+                "connect", "connection refused", "connection error",
+                "failed to connect", "wrapper account info", "wrapper is not authenticated",
+            )):
+                if wrapper_requested or self.use_wrapper:
+                    if "not authenticated" in lowered:
+                        return self._wrapper_not_authenticated_message()
+                    return self._wrapper_connection_error_message()
+            if wrapper_requested and err_str:
+                return f"Apple Music: wrapper initialization failed — {err_str}"
+        if wrapper_requested or self.use_wrapper:
+            return self._wrapper_connection_error_message()
+        return "Apple Music: gamdl components could not be initialized."
+
+    async def _initialize_gamdl_components(self, song_codec=None, use_wrapper=None, force=False):
+        self._clear_gamdl_caches()
+        self._last_gamdl_init_error = None
+
+        requested_codec = song_codec if song_codec is not None else self.song_codec
+        requested_wrapper = use_wrapper if use_wrapper is not None else self.use_wrapper
+
+        needs_reinit = force
+        if not needs_reinit and self.gamdl_downloader:
+            if self._wrapper_enabled() != bool(requested_wrapper):
+                needs_reinit = True
+            elif hasattr(self.gamdl_song_interface, 'codec_priority') and self.gamdl_song_interface.codec_priority != [requested_codec]:
+                needs_reinit = True
+            elif self.song_codec != requested_codec:
+                needs_reinit = True
+
+        if not self.gamdl_downloader or needs_reinit:
+            if self._debug:
+                print(f"[Apple Music Debug] Initializing gamdl components (force={force})...")
             try:
                 orpheus_temp_path = Path(self.settings.get("temp_path", tempfile.gettempdir()))
-                
-                # Read main OrpheusDL settings.json for binary paths
-                main_settings = {}
-                settings_file = Path("./config/settings.json")
-                if settings_file.exists():
-                    try:
-                        with open(settings_file, 'r') as f:
-                            main_settings = json.load(f)
-                    except Exception as e:
-                        if self._debug:
-                            print(f"[Apple Music Debug] Could not read main settings.json: {e}")
-                
-                # Extract binary paths from main settings, fallback to defaults
-                ffmpeg_path = main_settings.get("global", {}).get("advanced", {}).get("ffmpeg_path", "ffmpeg")
-                mp4box_path = main_settings.get("global", {}).get("advanced", {}).get("mp4box_path", "MP4Box")
-                mp4decrypt_path = main_settings.get("global", {}).get("advanced", {}).get("mp4decrypt_path", "mp4decrypt")
-                
-                # Helper to find and fix binaries
-                def resolve_binary_path(binary_name, default_path):
-                    # Always log to help debug path resolution issues
-                    print(f"[Apple Music] resolve_binary_path called for: {binary_name}, default_path: {default_path}")
-                    
-                    # If the user specified a custom path (not the default name), verify it exists
-                    if default_path != binary_name:
-                        print(f"[Apple Music] Using custom path: {default_path}")
-                        return default_path
+                wrapper_api = self.wrapper_api if requested_wrapper else None
+                if requested_wrapper and wrapper_api is None:
+                    wrapper_url = self._get_wrapper_url()
+                    wrapper_api = await WrapperApi.create(base_url=wrapper_url)
+                    self.wrapper_api = wrapper_api
 
-                    # Search paths for local binaries
-                    search_paths = []
-                    
-                    # 1. Always check Application Support on macOS first (most common user location)
-                    if platform.system() == "Darwin":
-                        app_support = os.path.expanduser("~/Library/Application Support/OrpheusDL GUI")
-                        search_paths.append(os.path.join(app_support, binary_name))
-                        print(f"[Apple Music] Added Application Support path: {os.path.join(app_support, binary_name)}")
-                    
-                    # 2. Check relative to executable (frozen app)
-                    if getattr(sys, 'frozen', False):
-                        app_dir = os.path.dirname(sys.executable)
-                        search_paths.append(os.path.join(app_dir, binary_name))
-                        print(f"[Apple Music] Added frozen app dir path: {os.path.join(app_dir, binary_name)}")
-                        
-                        # macOS Bundle logic
-                        if platform.system() == "Darwin" and ".app/Contents/MacOS" in sys.executable:
-                            bundle_dir = os.path.dirname(os.path.dirname(os.path.dirname(sys.executable)))
-                            parent_dir = os.path.dirname(bundle_dir)
-                            search_paths.append(os.path.join(bundle_dir, binary_name)) 
-                            search_paths.append(os.path.join(parent_dir, binary_name))
-                            print(f"[Apple Music] Added bundle paths: {os.path.join(bundle_dir, binary_name)}, {os.path.join(parent_dir, binary_name)}")
-
-                    # 3. Check CWD
-                    search_paths.append(os.path.join(os.getcwd(), binary_name))
-                    print(f"[Apple Music] Added CWD path: {os.path.join(os.getcwd(), binary_name)}")
-                    
-                    print(f"[Apple Music] Searching {len(search_paths)} paths for {binary_name}...")
-
-                    # Check all search paths
-                    for path in search_paths:
-                        exists = os.path.isfile(path)
-                        print(f"[Apple Music] Checking: {path} -> {'EXISTS' if exists else 'NOT FOUND'}")
-                        if exists:
-                            # Ensure executable permissions
-                            if not os.access(path, os.X_OK):
-                                try:
-                                    print(f"[Apple Music] Setting executable permissions for {path}")
-                                    os.chmod(path, 0o755)
-                                except Exception as e:
-                                    print(f"[Apple Music Warning] Failed to set executable permissions for {path}: {e}")
-                            
-
-                            print(f"[Apple Music] FOUND {binary_name} at: {path}")
-                            return path
-                    
-                    # Fallback to system PATH (shutil.which)
-
-                    print(f"[Apple Music] Not found locally, trying shutil.which({binary_name})...")
-                    system_path = shutil.which(binary_name)
-                    if system_path:
-
-                        print(f"[Apple Music] Found system {binary_name} at: {system_path}")
-                        return system_path
-                    
-
-                    print(f"[Apple Music] WARNING: {binary_name} NOT FOUND anywhere!")
-                    return binary_name
-
-                # Resolve all binaries
-                ffmpeg_name = "ffmpeg.exe" if platform.system() == "Windows" else "ffmpeg"
-                mp4box_name = "mp4box.exe" if platform.system() == "Windows" else "MP4Box"
-                mp4decrypt_name = "mp4decrypt.exe" if platform.system() == "Windows" else "mp4decrypt"
-
-
-                ffmpeg_path = resolve_binary_path(ffmpeg_name, ffmpeg_path)
-                mp4box_path = resolve_binary_path(mp4box_name, mp4box_path)
-                mp4decrypt_path = resolve_binary_path(mp4decrypt_name, mp4decrypt_path)
-
-
-                print(f"[Apple Music] Final resolved paths:")
-                print(f"[Apple Music]   ffmpeg: {ffmpeg_path}")
-                print(f"[Apple Music]   mp4box: {mp4box_path}")
-                print(f"[Apple Music]   mp4decrypt: {mp4decrypt_path}")
-                
-                self.gamdl_downloader = Downloader(
+                self.gamdl_base_interface = await AppleMusicBaseInterface.create(
                     apple_music_api=self.apple_music_api,
                     itunes_api=self.itunes_api,
-                    temp_path=orpheus_temp_path / "gamdl_temp",
-                    silent=not self._debug,  # Only verbose if debug is enabled
-                    ffmpeg_path=ffmpeg_path,
-                    mp4box_path=mp4box_path,
-                    mp4decrypt_path=mp4decrypt_path,
+                    wrapper_api=wrapper_api,
                 )
-                # Log what the Downloader actually has for paths
 
-                self.gamdl_downloader.set_cdm()
+                self.gamdl_song_interface = OrpheusAppleMusicSongInterface(
+                    base=self.gamdl_base_interface,
+                    quality_tier=self.quality_tier,
+                    debug=self._debug,
+                    codec_priority=[requested_codec],
+                    synced_lyrics_format=SyncedLyricsFormat.LRC,
+                )
+
+                music_video_interface = AppleMusicMusicVideoInterface(
+                    base=self.gamdl_base_interface,
+                )
+                uploaded_video_interface = AppleMusicUploadedVideoInterface(
+                    base=self.gamdl_base_interface,
+                )
+
+                self.gamdl_interface = AppleMusicInterface(
+                    song=self.gamdl_song_interface,
+                    music_video=music_video_interface,
+                    uploaded_video=uploaded_video_interface,
+                    disallowed_media_types=[
+                        "music-videos",
+                        "library-music-videos",
+                        "uploaded-videos",
+                        "music-video",
+                        "post",
+                    ],
+                )
+
+                self.gamdl_base_downloader = AppleMusicBaseDownloader(
+                    interface=self.gamdl_interface,
+                    output_path=str(orpheus_temp_path / "gamdl_out"),
+                    temp_path=str(orpheus_temp_path / "gamdl_temp"),
+                    ffmpeg_path=self.binary_paths.get('ffmpeg', 'ffmpeg'),
+                    nm3u8dlre_path=self.binary_paths.get('nm3u8dlre', 'N_m3u8DL-RE'),
+                    download_mode=self.settings.get('download_mode', GamdlDownloadMode.YTDLP),
+                    silent=not self._debug,
+                )
+
+                self.gamdl_song_downloader = AppleMusicSongDownloader(
+                    base=self.gamdl_base_downloader,
+                )
+                music_video_downloader = AppleMusicMusicVideoDownloader(
+                    base=self.gamdl_base_downloader,
+                )
+                uploaded_video_downloader = AppleMusicUploadedVideoDownloader(
+                    base=self.gamdl_base_downloader,
+                )
+
+                self.gamdl_downloader = AppleMusicDownloader(
+                    song=self.gamdl_song_downloader,
+                    music_video=music_video_downloader,
+                    uploaded_video=uploaded_video_downloader,
+                    skip_cleanup=True,
+                )
+
+                self.gamdl_downloader_song = self.gamdl_song_downloader
+
+                if self._debug:
+                    print("[Apple Music Debug] gamdl_downloader components initialized successfully.")
             except Exception as e:
-
-                print(f"[Apple Music Error] Failed to initialize gamdl.downloader.Downloader: {e}")
+                self._last_gamdl_init_error = e
+                print(f"[Apple Music Error] Failed to initialize gamdl components: {e}")
+                import traceback
+                if self._debug:
+                    print(traceback.format_exc())
                 self.gamdl_downloader = None
-                return # Can't proceed to DownloaderSong without gamdl_downloader
-
-        if self.gamdl_downloader and not self.gamdl_downloader_song:
-            try:
-                self.gamdl_downloader_song = DownloaderSong(
-                    downloader=self.gamdl_downloader, # Pass the correctly initialized Downloader instance
-                    codec=self.song_codec
-                )
-            except Exception as e:
-                print(f"[Apple Music Error] Failed to initialize gamdl.downloader_song.DownloaderSong: {e}")
                 self.gamdl_downloader_song = None
 
     def custom_url_parse(self, link):
@@ -464,10 +1035,21 @@ class ModuleInterface:
             
             media_type = type_mapping.get(url_info['type'], DownloadTypeEnum.track)
             
+            # Priority: If authenticated, use account storefront. If not, use URL storefront.
+            storefront = url_info['country']
+            if self.is_authenticated and self.account_storefront:
+                if self._debug:
+                    print(f"[Apple Music Debug] Authenticated: Overriding URL storefront '{storefront}' with account storefront '{self.account_storefront}'")
+                storefront = self.account_storefront
+            
+            extra_kwargs = {'country': storefront, 'original_country': url_info['country']}
+            if url_info.get('is_library'):
+                extra_kwargs['is_library'] = True
+            
             return MediaIdentification(
                 media_type=media_type,
                 media_id=url_info['id'],
-                extra_kwargs={'country': url_info['country']}
+                extra_kwargs=extra_kwargs
             )
             
         except Exception as e:
@@ -478,12 +1060,32 @@ class ModuleInterface:
         from urllib.parse import urlparse, parse_qs
         
         parsed = urlparse(url)
-        path_parts = [part for part in parsed.path.split('/') if part]
+        path = parsed.path
+        if path.endswith('/'):
+            path = path[:-1]
+        path_parts = [part for part in path.split('/') if part]
         
-        if len(path_parts) < 3:
+        if len(path_parts) < 2:
             raise ValueError("Invalid Apple Music URL format")
         
-        # Extract country, type, and name from URL
+        # Handle library URLs: /library/playlist/p.XXXXX
+        if path_parts[0] == 'library':
+            media_type = path_parts[1]
+            media_id = path_parts[2] if len(path_parts) >= 3 else None
+            # Library requests require user storefront, but 'library' is not a country code
+            country = getattr(self, 'account_storefront', 'us')
+            
+            return {
+                'type': media_type,
+                'id': media_id,
+                'country': country,
+                'is_library': True
+            }
+
+        # Catalog URLs: /country/type/name/id or /country/type/name-id
+        if len(path_parts) < 3:
+             raise ValueError(f"Invalid standard Apple Music URL format: {url}")
+             
         country = path_parts[0]  # e.g., 'us'
         media_type = path_parts[1]  # e.g., 'song', 'album', 'playlist'
         
@@ -499,8 +1101,8 @@ class ModuleInterface:
                 # ID is the last part
                 potential_id = path_parts[-1]
                 
-                # Check if it's a playlist ID (pl.xxxxx format)
-                if potential_id.startswith('pl.'):
+                # Check if it's a playlist/album ID (pl.xxxxx, p.xxxxx, or l.xxxxx format)
+                if potential_id.startswith('pl.') or potential_id.startswith('p.') or potential_id.startswith('l.'):
                     media_id = potential_id
                 # Check if it's a numeric ID
                 elif potential_id.isdigit():
@@ -517,11 +1119,12 @@ class ModuleInterface:
                     # Try to get ID from the last part if no slash
                     id_match = re.search(r'(\d+)(?:\?|$)', name_and_id)
                 
-                # If no numeric ID found, check for playlist format (pl.xxxxx)
+                # If no numeric ID found, check for ID formats (pl., p., l.)
                 if not id_match:
-                    pl_match = re.search(r'/(pl\.[a-f0-9]+)(?:\?|$)', url)
+                    # Match pl. (catalog), p. (library playlist), or l. (library album)
+                    pl_match = re.search(r'/((?:pl\.|p\.|l\.)[a-f0-9]+)(?:\?|$)', url)
                     if not pl_match:
-                        pl_match = re.search(r'(pl\.[a-f0-9]+)(?:\?|$)', name_and_id)
+                        pl_match = re.search(r'((?:pl\.|p\.)[a-f0-9]+)(?:\?|$)', name_and_id)
                     if pl_match:
                         media_id = pl_match.group(1)
                     else:
@@ -547,42 +1150,111 @@ class ModuleInterface:
             }
             
             search_type = type_mapping.get(query_type, 'songs')
-            results = self.apple_music_api.search(query, types=search_type, limit=limit)
+            
+            # Apple Music Search API has a hard limit of 50 results per request
+            search_limit = min(int(limit), 50) if limit else 50
+            
+            results = self._run_async(lambda s: s.apple_music_api.get_search_results(term=query, types=search_type, limit=search_limit))
+            
+            # Map 'results' structure to what the rest of the method expects
+            if 'results' in results:
+                results = results['results']
             
             search_results = []
             if search_type in results:
                 for item in results[search_type]['data']:
+                    attrs = item.get('attributes', {})
+                    
                     # Extract artist information
                     artists = []
                     if query_type == DownloadTypeEnum.artist:
-                        artists = [item['attributes']['name']]
-                    elif 'artistName' in item['attributes']:
-                        artists = [item['attributes']['artistName']]
-                    elif 'curatorName' in item['attributes']:  # For playlists
-                        artists = [item['attributes']['curatorName']]
+                        artists = [attrs.get('name', '')]
+                    elif 'artistName' in attrs:
+                        artists = artists_from_apple_attrs(attrs)
+                    elif 'curatorName' in attrs:  # For playlists
+                        artists = [attrs['curatorName']]
                     
                     # Calculate duration for tracks
                     duration = None
-                    if 'durationInMillis' in item['attributes']:
-                        duration = item['attributes']['durationInMillis'] // 1000
+                    if 'durationInMillis' in attrs:
+                        duration = attrs['durationInMillis'] // 1000
                     
-                    # Get additional info
+                    # Get additional info (Tracks first, then content rating, then audio traits)
                     additional = []
-                    if 'contentRating' in item['attributes']:
-                        additional.append(item['attributes']['contentRating'])
-                    if 'trackCount' in item['attributes']:
-                        additional.append(f"{item['attributes']['trackCount']} tracks")
+                    if 'trackCount' in attrs:
+                        tc = attrs['trackCount']; additional.append(f"1 track" if tc == 1 else f"{tc} tracks")
+                    # Only hide playlists that explicitly have 0 tracks; show playlists when trackCount is missing (API may omit it)
+                    if query_type == DownloadTypeEnum.playlist and attrs.get('trackCount') == 0:
+                        continue
+
+                        
+                    formatted_traits = self._format_audio_traits(attrs, item_type=item.get('type'))
+                    if formatted_traits:
+                        additional.append(formatted_traits)
+                    
+                    # Extract cover URL from artwork template (small size for search results)
+                    cover_url = None
+                    artwork = attrs.get('artwork', {})
+                    if artwork and artwork.get('url'):
+                        # Use 56x56 for search result thumbnails
+                        cover_url = artwork['url'].replace('{w}', '56').replace('{h}', '56')
+                    
+                    # Extract preview URL (Apple Music provides 30-second previews)
+                    preview_url = None
+                    previews = attrs.get('previews', [])
+                    if previews and len(previews) > 0:
+                        preview_url = previews[0].get('url')
+                    
+                    # For playlists, use lastModifiedDate for year when releaseDate is not set
+                    year_val = self._extract_year(attrs.get('releaseDate'))
+                    if year_val is None and query_type == DownloadTypeEnum.playlist:
+                        year_val = self._extract_year(attrs.get('lastModifiedDate'))
+                    if 'url' in attrs:
+                        attrs['url'] = self._localize_url(attrs['url'])
                     
                     search_results.append(SearchResult(
                         result_id=item['id'],
-                        name=item['attributes']['name'],
+                        name=attrs.get('name', ''),
                         artists=artists,
                         duration=duration,
-                        year=self._extract_year(item['attributes'].get('releaseDate')),
-                        explicit=item['attributes'].get('contentRating') == 'explicit',
+                        year=year_val,
+                        explicit=attrs.get('contentRating') == 'explicit',
                         additional=additional,
+                        image_url=cover_url,
+                        preview_url=preview_url,
                         extra_kwargs={'raw_result': item}
                     ))
+            
+            if query_type == DownloadTypeEnum.playlist:
+                missing_additional = [t for t in search_results if not t.additional or not t.duration]
+                if missing_additional:
+                    pcounts = {}
+                    
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                        for pid, tc, dur in executor.map(self._fetch_am_playlist_meta, [t.result_id for t in missing_additional]):
+                            pcounts[pid] = {'tc': tc, 'dur': dur}
+                    
+                    for t in missing_additional:
+                        if t.result_id in pcounts:
+                            meta = pcounts[t.result_id]
+                            if not t.additional and meta.get('tc'):
+                                tc = meta['tc']
+                                t.additional = [f"1 track" if tc == 1 else f"{tc} tracks"]
+                            if not t.duration and meta.get('dur'):
+                                t.duration = meta['dur']
+            
+            elif query_type == DownloadTypeEnum.album:
+                missing_duration = [t for t in search_results if not t.duration]
+                if missing_duration:
+                    acounts = {}
+                    
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                        for aid, dur in executor.map(self._fetch_am_album_duration, [t.result_id for t in missing_duration]):
+                            if dur: acounts[aid] = dur
+                    
+                    for t in missing_duration:
+                        if t.result_id in acounts:
+                            t.duration = acounts[t.result_id]
             
             return search_results
             
@@ -598,29 +1270,440 @@ class ModuleInterface:
         except (ValueError, IndexError):
             return None
 
-    def get_track_info(self, track_id: str, quality_tier: QualityEnum, codec_options: CodecOptions, data: Optional[Dict[str, Any]] = None, **kwargs) -> Optional[TrackInfo]:
+    def _ensure_credentials(self):
+        """
+        Require valid cookies (authenticated session) before download/metadata.
+        Without this, we would return 'Not Authenticated' and fail later. Matches
+        Spotify/Qobuz/Deezer: show what's missing and where to fill it in.
+        """
+        self._check_and_reload_cookies()
+        if self.is_authenticated and self.apple_music_api:
+            return
+        cookies_path_str = self.settings.get('cookies_path', './config/cookies.txt')
+        cookies_path = Path(cookies_path_str) if cookies_path_str else None
+        if not cookies_path or not cookies_path.exists():
+            default_cookies = Path('./config/cookies.txt')
+            if default_cookies.exists():
+                cookies_path = default_cookies
+        error_msg = 'Apple Music cookies are required for downloading. Please provide cookies.txt in /config folder.'
+        raise self.exception(error_msg)
+
+    async def _setup_api_clients(self):
+        """
+        Initialize or re-initialize AppleMusicApi and ItunesApi based on current settings.
+        This is extracted to be callable from both __init__ and _run_async for self-healing.
+        This MUST be called within the background loop thread.
+        """
+        cookies_path_str = self.settings.get('cookies_path', './config/cookies.txt')
+        cookies_path = Path(cookies_path_str) if cookies_path_str else None
+        if cookies_path and not cookies_path.exists():
+            default_cookies = Path('./config/cookies.txt')
+            if default_cookies.exists():
+                cookies_path = default_cookies
+        
+        with self._gamdl_quiet():
+            self.use_wrapper = self.settings.get('use_wrapper', False)
+            language = self.settings.get('language', 'en-US')
+            self.wrapper_api = None
+
+            try:
+                if self.use_wrapper:
+                    wrapper_url = self._get_wrapper_url()
+                    try:
+                        if not getattr(self, '_wrapper_offline', False):
+                            self.wrapper_api = await WrapperApi.create(base_url=wrapper_url)
+                            self.apple_music_api = await AppleMusicApi.create_from_wrapper(
+                                wrapper_api=self.wrapper_api,
+                                language=language,
+                            )
+                    except Exception as wrapper_err:
+                        if self._is_wrapper_auth_error(str(wrapper_err)):
+                            if self._debug:
+                                print(f"[Apple Music Debug] Wrapper auth required: {wrapper_err}")
+                        self._wrapper_offline = True
+                        self.wrapper_api = None
+
+                if not getattr(self, 'apple_music_api', None):
+                    kwargs = {'language': language}
+                    if cookies_path and cookies_path.exists():
+                        kwargs['cookies_path'] = str(cookies_path)
+                        try:
+                            self.apple_music_api = await AppleMusicApi.create_from_netscape_cookies(**kwargs)
+                        except Exception as ce:
+                            if self._debug:
+                                print(f"[Apple Music Debug] Cookie initialization failed: {ce}")
+                            raise self.exception(self._cookie_init_error_message(cookies_path, ce))
+                    else:
+                        kwargs.pop('cookies_path', None)
+                        self.apple_music_api = await AppleMusicApi.create(**kwargs)
+
+                if self.apple_music_api:
+                    self.itunes_api = await ItunesApi.create(
+                        storefront=self.apple_music_api.storefront,
+                        language=language,
+                    )
+                    self.account_storefront = self.apple_music_api.storefront
+                    self.is_authenticated = self.apple_music_api.active_subscription
+
+                self._resolve_all_binary_paths()
+                self.song_codec = self._get_gamdl_codec(self.settings.get('codec', 'aac'))
+                
+            except Exception as e:
+                if self._debug:
+                    print(f"[Apple Music Error] API Setup failed: {e}")
+                import traceback
+                traceback.print_exc()
+                raise
+
+    def _check_and_reload_cookies(self):
+        """
+        Checks if cookies.txt exists and reloads the session if needed.
+        This allows the user to add cookies.txt while the app is running.
+        """
+        # Get configured path
+        cookies_path_str = self.settings.get('cookies_path', './config/cookies.txt')
+        cookies_path = Path(cookies_path_str) if cookies_path_str else None
+        
+        # If configured path doesn't exist, try default
+        if not cookies_path or not cookies_path.exists():
+            default_cookies = Path('./config/cookies.txt')
+            if default_cookies.exists():
+                cookies_path = default_cookies
+        
+        # If we found a cookies file
+        if cookies_path and cookies_path.exists():
+            if self.apple_music_api:
+                try:
+                    if self._debug:
+                        print(f"[Apple Music Debug] Reloading cookies from {cookies_path}...")
+                    
+                    with self._lock:
+                        # Re-initialize the API with new cookies using the background loop
+                        self.apple_music_api = self._run_async(lambda s: AppleMusicApi.create_from_netscape_cookies(
+                            cookies_path=str(cookies_path),
+                            language=self.settings.get('language', 'en-US')
+                        ))
+                    
+                    self.is_authenticated = self.apple_music_api.active_subscription
+                    if self.is_authenticated:
+                        if self._debug:
+                            print("[Apple Music Debug] Successfully authenticated after reloading cookies.")
+                    else:
+                        if self._debug:
+                            print("[Apple Music Warning] Reloaded cookies but active subscription still missing.")
+                except Exception as e:
+                    if self._debug:
+                        print(f"[Apple Music Error] Failed to reload cookies: {e}")
+                    raise self.exception(self._cookie_init_error_message(cookies_path, e))
+
+    def _get_equivalent_track_id(self, isrc: str, target_storefront: str, title: str = None, artist: str = None) -> Optional[str]:
+        """
+        Search for a track by ISRC (or Title/Artist) in the target storefront and return its ID.
+        Useful when the original track ID is from a different region and 404s in the user's region.
+        """
+        if not target_storefront:
+            return None
+            
         if self._debug:
-            print(f"[Apple Music Debug] get_track_info called for track_id: {track_id}, quality_tier: {quality_tier.name}")
+            print(f"[Apple Music Debug] Searching for equivalent track in storefront '{target_storefront}'...")
+            
+        current_storefront = self.apple_music_api.storefront
+        # Set storefront BEFORE _run_async so it's captured by the preservation logic
+        self.apple_music_api.storefront = target_storefront
+        
+        try:
+            # 1. Search by ISRC if available
+            if isrc:
+                if self._debug:
+                    print(f"[Apple Music Debug] Trying ISRC search: {isrc}")
+                results = self._run_async(lambda s: s.apple_music_api.get_search_results(term=isrc, types="songs", limit=5), storefront=target_storefront)
+                
+                if results and 'results' in results and 'songs' in results['results']:
+                    songs = results['results']['songs'].get('data', [])
+                    for song in songs:
+                        song_isrc = song.get('attributes', {}).get('isrc')
+                        if song_isrc and song_isrc.lower() == isrc.lower():
+                            new_id = song.get('id')
+                            if self._debug:
+                                print(f"[Apple Music Debug] Found equivalent track ID {new_id} via ISRC {isrc}")
+                            return new_id
 
-        # Extract country from either direct kwargs or the 'data' dict
-        country = kwargs.get('country') or (data.get('country') if data else None)
-        self._set_storefront(country)
-
-        if not self.is_authenticated or not self.apple_music_api:
+            # 2. Fallback to Search by Title and Artist if ISRC failed or wasn't provided
+            if title and artist:
+                query = f"{title} {artist}"
+                if self._debug:
+                    print(f"[Apple Music Debug] Trying semantic search: {query}")
+                results = self._run_async(lambda s: s.apple_music_api.get_search_results(term=query, types="songs", limit=10), storefront=target_storefront)
+                
+                if results and 'results' in results and 'songs' in results['results']:
+                    songs = results['results']['songs'].get('data', [])
+                    
+                    # Pass 1: Look for exact title match
+                    for song in songs:
+                        attrs = song.get('attributes', {})
+                        if title.lower() == attrs.get('name', '').lower() and \
+                           (artist.lower() in attrs.get('artistName', '').lower() or any(artist.lower() in a.lower() for a in attrs.get('artistNames', []))):
+                            new_id = song.get('id')
+                            if self._debug:
+                                print(f"[Apple Music Debug] Found equivalent track ID {new_id} via exact semantic search")
+                            return new_id
+                            
+                    # Pass 2: Look for fuzzy title match
+                    for song in songs:
+                        attrs = song.get('attributes', {})
+                        # If original title doesn't have remix/version but result does, skip it to avoid getting remixes
+                        result_name = attrs.get('name', '').lower()
+                        original_clean = "remix" not in title.lower() and "version" not in title.lower()
+                        if original_clean and ("remix" in result_name or "version" in result_name):
+                            continue
+                            
+                        if title.lower() in result_name and \
+                           (artist.lower() in attrs.get('artistName', '').lower() or any(artist.lower() in a.lower() for a in attrs.get('artistNames', []))):
+                            new_id = song.get('id')
+                            if self._debug:
+                                print(f"[Apple Music Debug] Found equivalent track ID {new_id} via fuzzy semantic search")
+                            return new_id
+                        
             if self._debug:
-                print("[Apple Music Error] Not authenticated or API not initialized for get_track_info.")
-            # Returning an error-state TrackInfo might be better than None if Orpheus expects an object
-            return TrackInfo(name=f"Error: Not Authenticated for {track_id}", error="Not Authenticated", artists=["Unknown Artist"], album="", album_id=None, artist_id=None, duration=0, codec=CodecEnum.AAC, bitrate=0, sample_rate=0, release_year=None, cover_url=None, explicit=False, tags=Tags())
+                print(f"[Apple Music Debug] No equivalent track found in {target_storefront}")
+            return None
+            
+        except Exception as e:
+            if self._debug:
+                print(f"[Apple Music Debug] Error searching for equivalent track: {e}")
+            return None
+        finally:
+            self.apple_music_api.storefront = current_storefront
+
+    def get_track_info(self, track_id: str, quality_tier: QualityEnum, codec_options: CodecOptions, data: Optional[Dict[str, Any]] = None, **kwargs) -> Optional[TrackInfo]:
+        if getattr(self, '_debug', False):
+            print(f"[{module_information.service_name} DEBUG] get_track_info called for track_id: {track_id}")
+            print(f"[{module_information.service_name} DEBUG] kwargs keys: {list(kwargs.keys())}")
+            print(f"[{module_information.service_name} DEBUG] country in kwargs: {kwargs.get('country')}")
+        
+        # Re-evaluate settings from config to ensure we catch changes from the GUI
+        self.song_codec = self._get_gamdl_codec(self.settings.get('codec', 'aac'))
+        self.use_wrapper = self.settings.get('use_wrapper', False)
+        
+        # allow_refetch=True will trigger a full API fetch if essential IDs are missing.
+        # We default to True now to ensure complete metadata during downloads, 
+        # but Orpheus search/listing usually passes 'data' which we use first.
+        allow_refetch = kwargs.get('allow_refetch', True)
+        
+        # Handle case where track_id is passed as a dictionary (from album/playlist track lists)
+        if isinstance(track_id, dict):
+            if data is None:
+                data = track_id
+            track_id = str(data.get('id'))
+            
+        # Handle stringified dictionary if passed as string (e.g. from music_downloader.py)
+        # This occurs when playlist track dicts are cast to strings somewhere in the pipeline
+        elif isinstance(track_id, str) and (track_id.strip().startswith('{') or "%7B" in track_id):
+            import ast
+            import urllib.parse
+            try:
+                # Try to clean up URL encoding if present
+                clean_id = track_id
+                if "%7B" in clean_id:
+                    clean_id = urllib.parse.unquote(clean_id)
+                
+                # Check again if it looks like a dict after decoding
+                if clean_id.strip().startswith('{'):
+                    try:
+                        # Safely evaluate string as python dict
+                        potential_data = ast.literal_eval(clean_id)
+                        if isinstance(potential_data, dict) and 'id' in potential_data:
+                            # Use the extracted ID
+                            extracted_id = potential_data.get('id')
+                            if extracted_id:
+                                track_id = str(extracted_id)
+                                # Also use the data if we don't have any
+                                if data is None: 
+                                    data = potential_data
+                                if self._debug:
+                                    print(f"[Apple Music Debug] Successfully parsed stringified dict ID: {track_id}")
+                    except (ValueError, SyntaxError):
+                        # Fallback: simple string extraction if eval fails
+                        if "'id': '" in clean_id:
+                            start = clean_id.find("'id': '") + 7
+                            end = clean_id.find("'", start)
+                            if start > 6 and end > start:
+                                track_id = clean_id[start:end]
+                                if self._debug:
+                                    print(f"[Apple Music Debug] Extracted ID via string manipulation: {track_id}")
+            except Exception as e:
+                if self._debug:
+                    print(f"[Apple Music Debug] Failed to parse stringified track_id: {e}")
+                # Continue with original track_id if parsing fails, let API handle error
+            
+        if getattr(self, '_debug', False):
+            print(f"[{module_information.service_name} DEBUG] kwargs keys: {list(kwargs.keys())}")
+            
+        self._ensure_credentials()
 
         try:
-            # Check if we have raw_result from search - use it to avoid extra API call
+            # Detection for library IDs (e.g., 65WJUJIOK3UJT5J5H4DXEXBFUY)
+            def is_library_id(tid):
+                tid_str = str(tid)
+                return len(tid_str) > 15 and not tid_str.isdigit()
+
+            # Initialize country from kwargs
+            country = kwargs.get('country')
+            
+            # Try to extract country if URL is provided (overrides kwargs if present)
+            if 'url' in kwargs and kwargs['url']:
+                url_country = self._parse_apple_music_url(kwargs['url']).get('country')
+                if url_country:
+                    country = url_country
+                    if self._debug:
+                        print(f"[Apple Music Debug] Parsed country '{country}' from URL: {kwargs['url']}")
+
+            self._set_storefront(country)
+            
+            # Check if we have raw_result from search
             if 'raw_result' in kwargs and kwargs['raw_result']:
                 track_api_data = kwargs['raw_result']
                 if self._debug:
                     print(f"[Apple Music Debug] Using raw_result from search for track {track_id}")
             else:
                 # Use data if provided (e.g., from album track list), otherwise fetch
-                track_api_data = data if data and isinstance(data, dict) and data.get('id') == track_id else self.apple_music_api.get_song(track_id)
+                async def _fetch_with_logging(s, sid):
+                    try:
+                        # Choose catalog or library API based on ID format
+                        if is_library_id(sid):
+                            if s._debug:
+                                print(f"[Apple Music Debug] Library ID detected: {sid}. Fetching via library API...")
+                            library_data = await s.apple_music_api.get_library_song(sid)
+                            
+                            # Critical Optimization: Try to map library item to catalog item
+                            if library_data and 'data' in library_data and library_data['data']:
+                                track_data = library_data['data'][0]
+                                catalog_rels = track_data.get('relationships', {}).get('catalog', {}).get('data', [])
+                                if catalog_rels:
+                                    cat_id = catalog_rels[0].get('id')
+                                    if cat_id:
+                                        if s._debug:
+                                            print(f"[Apple Music Debug] Library ID {sid} mapped to catalog ID {cat_id}. Fetching catalog metadata...")
+                                        # Recursively fetch the catalog version
+                                        return await s.apple_music_api.get_song(cat_id)
+                            return library_data
+                        else:
+                            return await s.apple_music_api.get_song(sid)
+                    except Exception as fe:
+                        if getattr(s, '_debug', False):
+                            print(f"[Apple Music Debug] API fetch failed for {sid}: {fe}")
+                        return None
+
+                track_api_data = data if data and isinstance(data, dict) and data.get('id') == track_id and 'attributes' in data else self._run_async(lambda s: _fetch_with_logging(s, track_id), storefront=country)
+                
+                # Check for Early ID Reconciliation: If the data (either provided or fetched) 
+                # already has a catalogId in its playParams, update track_id now!
+                if track_api_data:
+                    # Unwrap from 'data' list if present for the playParams check
+                    temp_item = track_api_data
+                    if isinstance(temp_item, dict) and 'data' in temp_item and temp_item['data']:
+                         temp_item = temp_item['data'][0]
+                    
+                    play_params = temp_item.get('attributes', {}).get('playParams', {})
+                    catalog_id = play_params.get('catalogId')
+                    if catalog_id and str(catalog_id) != str(track_id):
+                        if self._debug:
+                            print(f"[Apple Music Debug] Map library ID {track_id} to catalog ID {catalog_id} before unwrap. Updating track_id.")
+                        track_id = str(catalog_id)
+                
+                # Unwrap from 'data' list if present
+                if track_api_data and 'data' in track_api_data and len(track_api_data['data']) > 0:
+                    track_api_data = track_api_data['data'][0]
+                
+                # Fallback to account storefront if url-based storefront fails
+                if (not track_api_data or 'attributes' not in track_api_data) and country and self.account_storefront.lower() != country.lower():
+                    if self._debug:
+                        print(f"[Apple Music Debug] Fetch failed for storefront '{country}'. Retrying with account storefront '{self.account_storefront}'...")
+                    track_api_data = self._run_async(lambda s: _fetch_with_logging(s, track_id), storefront=self.account_storefront)
+                    # Unwrap from 'data' list if present
+                    if track_api_data and 'data' in track_api_data and len(track_api_data['data']) > 0:
+                        track_api_data = track_api_data['data'][0]
+                    
+                # If still failed, try a "guest" fetch (without user token) for metadata
+                if (not track_api_data or 'attributes' not in track_api_data):
+                    if self._debug:
+                        print(f"[Apple Music Debug] Initial fetch failed. Attempting guest fetch for metadata...")
+                    
+                    async def _fetch_guest(s, sid, st):
+                        # Temporarily remove tokens to avoid storefront restrictions on metadata
+                        original_headers = dict(s.apple_music_api.client.headers)
+                        original_cookies = dict(s.apple_music_api.client.cookies)
+                        if "media-user-token" in s.apple_music_api.client.cookies:
+                            del s.apple_music_api.client.cookies["media-user-token"]
+                        
+                        # Set requested storefront
+                        orig_st = s.apple_music_api.storefront
+                        s.apple_music_api.storefront = st
+                        
+                        try:
+                            # Use library song if needed
+                            if is_library_id(sid):
+                                if s._debug:
+                                    print(f"[Apple Music Debug] Library ID {sid} in guest fetch. Using get_library_song.")
+                                library_data = await s.apple_music_api.get_library_song(sid)
+                                
+                                # Optimization: Map to catalog item if possible
+                                if library_data and 'data' in library_data and library_data['data']:
+                                    track_data = library_data['data'][0]
+                                    catalog_rels = track_data.get('relationships', {}).get('catalog', {}).get('data', [])
+                                    if catalog_rels:
+                                        cat_id = catalog_rels[0].get('id')
+                                        if cat_id:
+                                            if s._debug:
+                                                print(f"[Apple Music Debug] Guest Library ID {sid} mapped to catalog ID {cat_id}. Switching.")
+                                            # Recursively fetch the catalog version
+                                            return await s.apple_music_api.get_song(cat_id)
+                                return library_data
+                            else:
+                                return await s.apple_music_api.get_song(sid)
+                        finally:
+                            s.apple_music_api.storefront = orig_st
+                            s.apple_music_api.client.headers.update(original_headers)
+                            s.apple_music_api.client.cookies.update(original_cookies)
+                    
+                    track_api_data = self._run_async(lambda s: _fetch_guest(s, track_id, country or self.account_storefront), storefront=country or self.account_storefront)
+                    # Unwrap from 'data' list if present
+                    if track_api_data and 'data' in track_api_data and len(track_api_data['data']) > 0:
+                        track_api_data = track_api_data['data'][0]
+                
+                # If everything else failed, try iTunes Search API (lookup)
+                if (not track_api_data or 'attributes' not in track_api_data):
+                    if self._debug:
+                        print(f"[Apple Music Debug] Apple Music API failed. Trying iTunes Search API fallback...")
+                    
+                    async def _fetch_itunes(s, sid):
+                        try:
+                            res = await s.itunes_api.get_lookup_result(sid, entity='song')
+                            if res and res.get('resultCount', 0) > 0:
+                                itunes_track = res['results'][0]
+                                # Map iTunes format to something resembling Apple Music API attributes
+                                return {
+                                    'id': str(itunes_track.get('trackId')),
+                                    'type': 'songs',
+                                    'attributes': {
+                                        'name': itunes_track.get('trackName'),
+                                        'albumName': itunes_track.get('collectionName'),
+                                        'artistName': itunes_track.get('artistName'),
+                                        'artwork': {'url': itunes_track.get('artworkUrl100', '').replace('100x100bb.jpg', '{w}x{h}bb.jpg')},
+                                        'durationInMillis': itunes_track.get('trackTimeMillis'),
+                                        'releaseDate': itunes_track.get('releaseDate'),
+                                        'genreNames': [g for g in [itunes_track.get('primaryGenreName')] if g and g.lower() != 'music'],
+                                        'trackNumber': itunes_track.get('trackNumber'),
+                                        'discNumber': itunes_track.get('discNumber'),
+                                        'contentRating': itunes_track.get('contentAdvisoryRating', '').lower()
+                                    }
+                                }
+                        except Exception as ie:
+                            if getattr(s, '_debug', False):
+                                print(f"[Apple Music Debug] iTunes lookup failed: {ie}")
+                        return None
+                    
+                    track_api_data = self._run_async(lambda s: _fetch_itunes(s, track_id), storefront=country)
 
             if not track_api_data or 'attributes' not in track_api_data:
                 if self._debug:
@@ -629,104 +1712,219 @@ class ModuleInterface:
 
             attrs = track_api_data['attributes']
             
-            name = attrs.get('name', 'Unknown Track')
-            album_name = attrs.get('albumName', 'Unknown Album')
-            artist_name = attrs.get('artistName', 'Unknown Artist')
-            
-            # Get primary artist ID if available (might need more complex logic for multiple artists/credits)
-            # For now, try to get it from the relationships if they exist
-            artist_id_from_rels = None
-            if 'relationships' in track_api_data and 'artists' in track_api_data['relationships']:
-                artist_data_rels = track_api_data['relationships']['artists'].get('data')
-                if artist_data_rels and len(artist_data_rels) > 0:
-                    artist_id_from_rels = artist_data_rels[0].get('id')
+            # Helper to get IDs from relationships
+            def get_ids(d):
+                aid = None
+                arid = None
+                if d.get('relationships'):
+                    if 'albums' in d['relationships']:
+                        rel_data = d['relationships']['albums'].get('data')
+                        if rel_data: aid = rel_data[0].get('id')
+                    if 'artists' in d['relationships']:
+                        rel_data = d['relationships']['artists'].get('data')
+                        if rel_data: arid = rel_data[0].get('id')
+                return aid, arid
 
-            # Artwork
-            artwork_template = attrs.get('artwork', {}).get('url')
-            cover_url = self._get_cover_url(artwork_template)
+            album_id_from_rels, artist_id_from_rels = get_ids(track_api_data)
 
-            # Duration
-            duration_ms = attrs.get('durationInMillis')
-            duration_sec = duration_ms // 1000 if duration_ms is not None else 0
-
-            # Release Date & Year
-            release_date_str = attrs.get('releaseDate')
-            year = self._extract_year(release_date_str)
-
-            # Codec & Bitrate (these are indicative, actual download format decided by get_track_download)
-            # Assume AAC 256kbps as a common display default. If user selected ALAC, reflect that.
-            display_codec = CodecEnum.AAC
-            display_bitrate = 256
-            if self.song_codec == GamdlSongCodec.ALAC : # self.song_codec is GamdlSongCodec
-                display_codec = CodecEnum.ALAC
-                display_bitrate = 0 # Placeholder for lossless
-            
-            # Explicit content
-            explicit = attrs.get('contentRating') == 'explicit'
-
-            # Tags
-            tags_obj = Tags(
-                album_artist=attrs.get('albumArtistName', artist_name),
-                track_number=attrs.get('trackNumber'),
-                # total_tracks= Need album context or separate fetch
-                disc_number=attrs.get('discNumber'),
-                # total_discs= Need album context
-                release_date=release_date_str,
-                genres=attrs.get('genreNames', []),
-                isrc=attrs.get('isrc'),
-                composer=attrs.get('composerName'),
-                # title, album, artist, year, explicit are part of TrackInfo directly
-            )
-
-            # Orpheus expects a list of artists
-            artists_list = [artist_name] if artist_name else ["Unknown Artist"]
-            
-            # Album ID might be part of a relationship or derivable if this track_info is part of an album call
-            # For a standalone track_info call, it might not be directly available without extra context/calls
-            album_id_from_rels = None
-            if 'relationships' in track_api_data and 'albums' in track_api_data['relationships']:
-                album_data_rels = track_api_data['relationships']['albums'].get('data')
-                if album_data_rels and len(album_data_rels) > 0:
-                    album_id_from_rels = album_data_rels[0].get('id')
-
-            # If album_id is not found from the relationships (e.g., from a search result),
-            # fetch the full song data to get it.
-            if not album_id_from_rels or not artist_id_from_rels:
+            # --- Supplemental Metadata Fetch (if IDs or lyrics flags missing) ---
+            # ONLY do this if explicitly allowed (e.g. during download) or if we have NO IDs at all
+            # Re-fetch full track data if needed (always use library-aware fetcher)
+            album_id_from_rels = attrs.get('albumName') or (track_api_data.get('relationships', {}).get('albums', {}).get('data', [{}])[0].get('id'))
+            artist_id_from_rels = attrs.get('artistName') or (track_api_data.get('relationships', {}).get('artists', {}).get('data', [{}])[0].get('id'))
+            if allow_refetch and (not album_id_from_rels or not artist_id_from_rels or 'hasLyrics' not in attrs or 'audioTraits' not in attrs or 'recordLabel' not in attrs or 'copyright' not in attrs or 'upc' not in attrs):
                 if self._debug:
-                    print(f"[Apple Music Debug] Album or Artist ID not in relationships for track {track_id}. Fetching full song data.")
-                full_track_data = self.apple_music_api.get_song(track_id)
-                if full_track_data and 'relationships' in full_track_data:
-                    # Try to get album_id again
-                    if not album_id_from_rels and 'albums' in full_track_data['relationships']:
-                        album_data_rels = full_track_data['relationships']['albums'].get('data')
-                        if album_data_rels and len(album_data_rels) > 0:
-                            album_id_from_rels = album_data_rels[0].get('id')
+                    print(f"[Apple Music Debug] Incomplete metadata (Album={album_id_from_rels}, Artist={artist_id_from_rels}, hasLyrics={'hasLyrics' in attrs}, audioTraits={'audioTraits' in attrs}) for track {track_id}. Fetching full song data.")
+                full_track_data = self._run_async(lambda s: _fetch_with_logging(s, track_id), storefront=country)
+                
+                if full_track_data and 'data' in full_track_data and len(full_track_data['data']) > 0:
+                    track_api_data = full_track_data['data'][0]
+                    attrs = track_api_data['attributes']
+                    album_id_from_rels, artist_id_from_rels = get_ids(track_api_data)
+                    if self._debug:
+                        print(f"[Apple Music Debug] Metadata updated after full fetch.")
 
-                    # Try to get artist_id again
-                    if not artist_id_from_rels and 'artists' in full_track_data['relationships']:
-                        artist_data_rels = full_track_data['relationships']['artists'].get('data')
-                        if artist_data_rels and len(artist_data_rels) > 0:
-                            artist_id_from_rels = artist_data_rels[0].get('id')
+            # --- Storefront Mismatch / Equivalent Check ---
+            actual_download_id = track_id
+            user_storefront = getattr(self, 'account_storefront', None)
+            api_storefront = country.lower() if country else (self.apple_music_api.storefront if self.apple_music_api else 'us')
+            
+            if self.is_authenticated and user_storefront and api_storefront and user_storefront.lower() != api_storefront.lower():
+                track_isrc = attrs.get('isrc')
+                name_for_search = attrs.get('name')
+                artist_name_for_search = attrs.get('artistName')
+                if track_isrc or (name_for_search and artist_name_for_search):
+                    equivalent_id = self._get_equivalent_track_id(track_isrc, user_storefront, name_for_search, artist_name_for_search)
                     
                     if self._debug:
-                        print(f"[Apple Music Debug] Found IDs after full fetch: Album={album_id_from_rels}, Artist={artist_id_from_rels}")
+                        print(f"[Apple Music Debug] ID {track_id} -> Storefronts: User={user_storefront}, API={api_storefront}. Result equivalent_id={equivalent_id}")
+                    
+                    if equivalent_id:
+                        actual_download_id = equivalent_id
+                        if self._debug:
+                            print(f"[Apple Music Debug] Using equivalent ID {actual_download_id} for storefront {user_storefront}")
+                            print(f"[Apple Music Debug] Found equivalent track {actual_download_id} in {user_storefront}. Fetching its metadata...")
+                        
+                        # Re-fetch metadata for the equivalent ID in the user's storefront to ensure downloader has working info
+                        equiv_metadata = self._run_async(lambda s: s.apple_music_api.get_song(actual_download_id), storefront=user_storefront)
+                        if equiv_metadata and 'data' in equiv_metadata and len(equiv_metadata['data']) > 0:
+                            track_api_data = equiv_metadata['data'][0]
+                            # Update local attrs for any later logic in this method
+                            attrs = track_api_data['attributes']
+                            album_id_from_rels, artist_id_from_rels = get_ids(track_api_data)
+                            if self._debug:
+                                print(f"[Apple Music Debug] Successfully fetched metadata for equivalent track {actual_download_id}")
+
+            # --- Final Consolidated Metadata Extraction ---
+            name = attrs.get('name', 'Unknown Track')
+            album_name = attrs.get('albumName', 'Unknown Album')
+            artists_list = artists_from_apple_attrs(attrs)
+            
+            duration_ms = attrs.get('durationInMillis')
+            duration_sec = duration_ms // 1000 if duration_ms is not None else 0
+            release_date_str = attrs.get('releaseDate')
+            # Album downloads should use the album release date for all tracks.
+            album_release_date = kwargs.get('album_release_date')
+            if album_release_date:
+                release_date_str = album_release_date
+            year = self._extract_year(release_date_str)
+            explicit = attrs.get('contentRating') == 'explicit'
+            
+            # Codec selection (indicative)
+            override_song_codec = kwargs.get('song_codec')
+            effective_codec = self._quality_to_codec(quality_tier) if quality_tier else (self._get_gamdl_codec(override_song_codec) if override_song_codec else self.song_codec)
+            
+            if self._debug:
+                print(f"[{module_information.service_name} DEBUG] info effective_codec: {effective_codec.name if hasattr(effective_codec, 'name') else str(effective_codec)}")
+            
+            display_codec = CodecEnum.AAC
+            display_bitrate = 256
+            display_bit_depth = 16
+            display_sample_rate = 44100
+
+            if effective_codec in (GamdlSongCodec.ALAC, GamdlSongCodec.ATMOS):
+                traits = attrs.get('audioTraits', [])
+                
+                # Verify if requested quality is actually available
+                supports_alac = 'lossless' in traits or 'hi-res-lossless' in traits
+                supports_atmos = 'atmos' in traits or 'spatial' in traits
+                
+                if effective_codec == GamdlSongCodec.ATMOS and supports_atmos:
+                    display_codec = CodecEnum.EAC3
+                    display_bitrate = 768
+                    display_bit_depth = 16
+                    display_sample_rate = 48000
+                elif (effective_codec == GamdlSongCodec.ALAC or (effective_codec == GamdlSongCodec.ATMOS and not supports_atmos)) and supports_alac:
+                    display_codec = CodecEnum.ALAC
+                    display_bitrate = 0
+                    
+                    if effective_codec == GamdlSongCodec.ATMOS and self._debug:
+                        print(f"[Apple Music Debug] Display fallback: Downgrading codec to ALAC as ATMOS is unavailable (Traits: {traits})")
+
+                    # Try to get precise info from manifest
+                    precise_info = self._get_precise_alac_info(attrs, GamdlSongCodec.ALAC, quality_tier=quality_tier)
+                    if precise_info:
+                        display_bit_depth = precise_info.get('bit_depth', 24)
+                        display_sample_rate = precise_info.get('sample_rate', 48000)
+                    else:
+                        # Fallback to trait-based inference if manifest fails
+                        if 'hi-res-lossless' in traits and quality_tier != QualityEnum.LOSSLESS:
+                            display_bit_depth, display_sample_rate = 24, 96000
+                        else:
+                            display_bit_depth, display_sample_rate = 24, 48000
+                else:
+                    # Fallback to AAC if requested quality is not available
+                    if self._debug:
+                        print(f"[Apple Music Debug] Requested {effective_codec.name} but track traits {traits} do not support it. Falling back to AAC.")
+                    display_codec = CodecEnum.AAC
+                    display_bitrate = 256
+                    display_bit_depth = 16
+                    display_sample_rate = 44100
+
+            # Extract record label and copyright from song attributes
+            record_label = attrs.get('recordLabel')
+            copyright_info = attrs.get('copyright')
+
+            # --- Relationship-based Metadata Inheritance ---
+            # If missing from song attributes, try to inherit from album relationship (crucial for Apple Music)
+            rels = track_api_data.get('relationships', {})
+            albums_rel = rels.get('albums', {}).get('data', [])
+            album_attrs = albums_rel[0].get('attributes', {}) if albums_rel else {}
+
+            # Album artist: prefer album-level context so every track shares one value.
+            album_artist = resolve_album_artist_tag(
+                kwargs.get('album_artist'),
+                attrs.get('albumArtistName'),
+                album_attrs.get('artistName') if album_attrs else None,
+                attrs.get('artistName'),
+            ) or (artists_list[0] if artists_list else 'Unknown Artist')
+            
+            if not record_label or not copyright_info:
+                if not record_label: record_label = album_attrs.get('recordLabel')
+                if not copyright_info: copyright_info = album_attrs.get('copyright')
+            
+            # Extract UPC (Universal Product Code) from track or album attributes
+            upc = attrs.get('upc') or album_attrs.get('upc')
+            
+            # --- Detailed Debug Logging ---
+            if self._debug:
+                print(f"[Apple Music Metadata Debug] Available keys for track {track_id}: {list(attrs.keys())}")
+                if copyright_info: print(f"[Apple Music Metadata Debug] Source Copyright: {copyright_info}")
+                if record_label: print(f"[Apple Music Metadata Debug] Source RecordLabel: {record_label}")
+            
+            if not record_label and copyright_info:
+                # Fallback: Extract from copyright string by stripping symbols and years
+                record_label = re.sub(r'^(?:℗|©|p|c|\(p\)|\(c\)|\u2117|\u00a9)\s*(?:\d{4})?\s*', '', copyright_info, flags=re.IGNORECASE).strip()
+                # If it still starts with a year or just the symbol, clean it further
+                record_label = re.sub(r'^\d{4}\s*', '', record_label).strip()
+
+            if self._debug and record_label:
+                print(f"[Apple Music Debug] Final extracted label/publisher: {record_label}")
+
+            # Extract track and disc counts
+            total_tracks_val = attrs.get('trackCount') or album_attrs.get('trackCount')
+            total_discs_val = attrs.get('discCount') or album_attrs.get('discCount')
+
+            # Determine the storefront that will be used for the URL (the one that actually yielded a valid metadata/download)
+            effective_storefront = user_storefront if actual_download_id != track_id else api_storefront
+            
+            tags_obj = Tags(
+                album_artist=album_artist,
+                track_number=attrs.get('trackNumber'),
+                total_tracks=total_tracks_val,
+                disc_number=attrs.get('discNumber'),
+                total_discs=total_discs_val,
+                release_date=release_date_str,
+                genres=[g for g in attrs.get('genreNames', []) if g.lower() != 'music'],
+                isrc=attrs.get('isrc'),
+                composer=attrs.get('composerName'),
+                label=record_label,
+                copyright=copyright_info,
+                upc=upc,
+                track_url=f"https://music.apple.com/{effective_storefront}/song/unknown/{actual_download_id}"
+            )
+
+            cover_url = self._get_cover_url(attrs.get('artwork', {}).get('url'))
+
+            download_extra_kwargs = {
+                'track_id': actual_download_id,
+                'api_response': track_api_data, 
+                'quality_tier': quality_tier,
+                'source_quality_tier': quality_tier.name if hasattr(quality_tier, 'name') else str(quality_tier),
+                'original_id': track_id,
+                'effective_storefront': effective_storefront
+            }
+            if override_song_codec: download_extra_kwargs['song_codec'] = override_song_codec
+            if kwargs.get('use_wrapper') is not None: download_extra_kwargs['use_wrapper'] = kwargs.get('use_wrapper')
 
             return TrackInfo(
-                name=name,
-                album=album_name,
-                album_id=str(album_id_from_rels) if album_id_from_rels else None,
-                artists=artists_list,
-                artist_id=str(artist_id_from_rels) if artist_id_from_rels else None,
-                duration=duration_sec,
-                codec=display_codec,
-                bitrate=display_bitrate,
-                sample_rate=44100, # Typically for Apple Music
-                release_year=year,
-                cover_url=cover_url,
-                explicit=explicit,
-                tags=tags_obj,
-                # download_extra_kwargs can store the raw API response if downloader needs more later
-                download_extra_kwargs={'api_response': track_api_data, 'source_quality_tier': quality_tier.name}
+                name=name, album=album_name, album_id=str(album_id_from_rels) if album_id_from_rels else None,
+                artists=artists_list, artist_id=str(artist_id_from_rels) if artist_id_from_rels else None,
+                duration=duration_sec, codec=display_codec, bitrate=display_bitrate, bit_depth=display_bit_depth,
+                sample_rate=display_sample_rate // 1000 if display_sample_rate else None, release_year=year,
+                cover_url=cover_url, explicit=explicit, tags=tags_obj, id=actual_download_id,
+                download_extra_kwargs=download_extra_kwargs,
+                lyrics_extra_kwargs={'data': track_api_data}
             )
 
         except Exception as e:
@@ -749,630 +1947,651 @@ class ModuleInterface:
             # Return an error-state TrackInfo object
             return TrackInfo(name=f"Error for {track_id}", error=error_msg, artists=["Unknown Artist"], album="", album_id=None, artist_id=None, duration=0, codec=CodecEnum.AAC, bitrate=0, sample_rate=0, release_year=None, cover_url=None, explicit=False, tags=Tags())
 
-    def get_track_download(self, track_id: str, quality_tier: QualityEnum, **kwargs) -> Optional[TrackDownloadInfo]:
+    def get_track_download(self, track_id: str = None, quality_tier: QualityEnum = None, codec_options: CodecOptions = None, **kwargs) -> Optional[TrackDownloadInfo]:
+        self._refresh_debug_mode()
         if self._debug:
-            print(f"[Apple Music Debug] get_track_download called for track_id: {track_id}, quality_tier: {quality_tier.name}")
+            print(f"[Apple Music Debug] get_track_download called for track_id: {track_id}")
+            print(f"[Apple Music Debug] quality_tier: {quality_tier} (Type: {type(quality_tier)})")
 
-        # Reset rich tagging flag for each new download
+        # Re-evaluate settings from config to ensure we catch changes from the GUI
+        self.song_codec = self._get_gamdl_codec(self.settings.get('codec', 'aac'))
+        self.use_wrapper = self.settings.get('use_wrapper', False)
+
+        self._ensure_credentials()
         self._using_rich_tagging = False
         
-        # Detect context by examining the kwargs and call stack
+        # Check for overrides from kwargs (passed from orpheus.py via extra_kwargs)
+        override_song_codec = kwargs.get('song_codec')
+        override_use_wrapper = kwargs.get('use_wrapper')
+        
+        # Try to recover quality_tier from kwargs if not passed directly
+        if quality_tier is None:
+            if 'source_quality_tier' in kwargs:
+                tier_btn_name = kwargs.get('source_quality_tier')
+                try:
+                    quality_tier = QualityEnum[tier_btn_name]
+                except:
+                    pass
+            elif 'quality_tier' in kwargs:
+                quality_tier = kwargs.get('quality_tier')
+        
+        # Infer quality_tier from codec override if still None
+        if quality_tier is None and override_song_codec:
+            if 'alac-lossless' in override_song_codec.lower():
+                quality_tier = QualityEnum.LOSSLESS
+            elif 'alac-hi-res' in override_song_codec.lower():
+                quality_tier = QualityEnum.HIFI
+
+        # Map quality_tier or string override to enum
+        if quality_tier:
+            effective_codec = self._quality_to_codec(quality_tier)
+        elif override_song_codec:
+            effective_codec = self._get_gamdl_codec(override_song_codec)
+        else:
+            effective_codec = self.song_codec
+
+        # Always log important selection info to GUI output when debug is on
+        if self._debug:
+            msg = f"[Apple Music Debug] Download: id={track_id}, tier={quality_tier}, codec={effective_codec.name if hasattr(effective_codec, 'name') else str(effective_codec)}"
+            print(msg)
+            if self.printer:
+                self.printer.oprint(f"       Debug: {msg}", 0)
+
+        if self._debug:
+            print(f"[Apple Music Debug] download effective_codec: {effective_codec.name if hasattr(effective_codec, 'name') else str(effective_codec)}")
+        # Detect context for indentation
         import inspect
-
-        # Default to single track indentation
-        indent_spaces = "        "  # 8 spaces for single tracks
-
+        indent_spaces = "        " 
         try:
-            # Check if we're in an album context by looking for album-specific indicators
-            # This is more reliable than trying to detect artist context
-
-            # Check for album context by looking for multi-track album indicators
             is_album_context = False
-
-            # First check kwargs for album context
             if 'extra_kwargs' in kwargs and kwargs['extra_kwargs']:
                 extra_kwargs = kwargs['extra_kwargs']
                 if 'album_id' in extra_kwargs or 'album_name' in extra_kwargs:
                     is_album_context = True
 
-            # If not found in kwargs, check call stack for album download functions
             if not is_album_context:
                 stack = inspect.stack()
                 for frame_info in stack:
-                    function_name = frame_info.function
-                    frame_locals = frame_info.frame.f_locals
-
-                    # Look for album download indicators, but be more specific
-                    if function_name == 'download_album':
-                        # Check if this is a multi-track album by looking for track count
-                        if 'album_info' in frame_locals:
-                            album_info = frame_locals['album_info']
-                            if self._debug:
-                                print(f"[Apple Music Debug] Found album_info: {type(album_info)}")
-                                if hasattr(album_info, '__dict__'):
-                                    print(f"[Apple Music Debug] album_info attributes: {list(album_info.__dict__.keys())}")
-                            # Only consider it an album context if it has multiple tracks
-                            # Check for tracks attribute (list of tracks)
-                            if hasattr(album_info, 'tracks') and album_info.tracks and len(album_info.tracks) > 1:
-                                is_album_context = True
-                                if self._debug:
-                                    print(f"[Apple Music Debug] Multi-track album detected: {len(album_info.tracks)} tracks")
-                                break
-                            elif hasattr(album_info, 'tracks'):
-                                if self._debug:
-                                    track_count = len(album_info.tracks) if album_info.tracks else 0
-                                    print(f"[Apple Music Debug] Single-track album detected: {track_count} tracks")
-                            # Fallback: check for track_count attribute
-                            elif hasattr(album_info, 'track_count') and album_info.track_count > 1:
-                                is_album_context = True
-                                if self._debug:
-                                    print(f"[Apple Music Debug] Multi-track album detected (track_count): {album_info.track_count} tracks")
-                                break
-                            elif hasattr(album_info, 'track_count'):
-                                if self._debug:
-                                    print(f"[Apple Music Debug] Single-track album detected (track_count): {album_info.track_count} tracks")
-                        else:
-                            # If we can't determine track count, assume it's an album
-                            is_album_context = True
-                            if self._debug:
-                                print(f"[Apple Music Debug] download_album function found, assuming album context")
-                            break
-                    elif 'album_info' in frame_locals:
-                        album_info = frame_locals['album_info']
-                        if self._debug:
-                            print(f"[Apple Music Debug] Found album_info in frame: {type(album_info)}")
-                        # Only consider it an album context if it has multiple tracks
-                        # Check for tracks attribute (list of tracks)
-                        if hasattr(album_info, 'tracks') and album_info.tracks and len(album_info.tracks) > 1:
-                            is_album_context = True
-                            if self._debug:
-                                print(f"[Apple Music Debug] Multi-track album detected in frame: {len(album_info.tracks)} tracks")
-                            break
-                        # Fallback: check for track_count attribute
-                        elif hasattr(album_info, 'track_count') and album_info.track_count > 1:
-                            is_album_context = True
-                            if self._debug:
-                                print(f"[Apple Music Debug] Multi-track album detected in frame (track_count): {album_info.track_count} tracks")
-                            break
-
-            # Determine indentation based on context
-            if self._debug:
-                print(f"[Apple Music Debug] Context detection for track {track_id}:")
-                print(f"[Apple Music Debug] is_album_context: {is_album_context}")
-
-            if is_album_context:
-                # Check if we're also in an artist context (for nested album in artist)
-                is_artist_context = False
-                stack = inspect.stack()
-                for frame_info in stack:
-                    function_name = frame_info.function
-                    frame_locals = frame_info.frame.f_locals
-
-                    if (function_name == 'download_artist' or
-                        'artist_id' in frame_locals):
-                        is_artist_context = True
+                    if frame_info.function in ['download_album', 'download_playlist']:
+                        is_album_context = True
                         break
-
-                if self._debug:
-                    print(f"[Apple Music Debug] is_artist_context: {is_artist_context}")
-
-                if is_artist_context:
-                    # Album track within artist download - use 8 spaces to match OrpheusDL's indentation system
-                    indent_spaces = "        "  # 8 spaces (matches OrpheusDL track content indentation)
-                    if self._debug:
-                        print(f"[Apple Music Debug] Using 8 spaces (album within artist)")
-                else:
-                    # Regular album track - use 8 spaces to match OrpheusDL's indentation system
-                    indent_spaces = "        "  # 8 spaces (matches OrpheusDL track content indentation)
-                    if self._debug:
-                        print(f"[Apple Music Debug] Using 8 spaces (regular album)")
-            else:
-                # Check for playlist context
-                is_playlist_context = False
-                stack = inspect.stack()
-                for frame_info in stack:
-                    function_name = frame_info.function
-                    if function_name == 'download_playlist':
-                        is_playlist_context = True
-                        if self._debug:
-                            print(f"[Apple Music Debug] Detected playlist context")
-                        break
-
-                if is_playlist_context:
-                    # Playlist track - use same indentation as other track details (8 spaces)
-                    indent_spaces = "        "  # 8 spaces
-                    if self._debug:
-                        print(f"[Apple Music Debug] Using 8 spaces (playlist track)")
-                else:
-                    # Single track (standalone or within artist)
-                    indent_spaces = "        "  # 8 spaces
-                    if self._debug:
-                        print(f"[Apple Music Debug] Using 8 spaces (single track)")
-
         except:
-            # If detection fails, use default single track indentation
-            indent_spaces = "        "  # 8 spaces
+            pass
 
+        async def _download_async():
+            # Stabilize storefront based on extra_kwargs to avoid region mismatches
+            local_storefront = kwargs.get('effective_storefront')
+            if local_storefront:
+                self._set_storefront(local_storefront)
+            
+            # 1. Get metadata (use provided api_response if available to save a request)
+            # We fetch this BEFORE initializing components so we can adjust the codec if needed
+            song_api_data = kwargs.get('api_response')
+            if song_api_data:
+                # Handle both full 'data' wrapper and direct item dict
+                if 'data' in song_api_data and isinstance(song_api_data['data'], list) and len(song_api_data['data']) > 0:
+                    song_data = song_api_data['data'][0]
+                elif 'attributes' in song_api_data:
+                    song_data = song_api_data
+                else:
+                    song_data = None
+            else:
+                song_data = None
 
-        print(f"[Apple Music] Authentication check: is_authenticated={self.is_authenticated}")
-        if not self.is_authenticated:
+            if not song_data:
+                with self._gamdl_quiet():
+                    # track_id might be None if passed via kwargs
+                    target_id = track_id or kwargs.get('track_id')
+                    if not target_id:
+                        raise DownloadError("Apple Music: No track ID provided for download.")
+                    song_metadata = await self.apple_music_api.get_song(target_id)
+                    
+                if not song_metadata or not song_metadata.get('data'):
+                    raise DownloadError(f"Apple Music: Failed to get metadata for track {target_id}")
+                song_data = song_metadata['data'][0]
 
-            raise AuthenticationError('"cookies.txt" not found, invalid, or expired.')
+            # 2. Check for quality availability and adjust effective_codec if needed
+            # Use local copy of effective_codec to avoid modifying the outer variable
+            local_effective_codec = effective_codec
+            traits = song_data.get('attributes', {}).get('audioTraits', [])
+            
+            if local_effective_codec == GamdlSongCodec.ALAC and not ('lossless' in traits or 'hi-res-lossless' in traits):
+                if self._debug:
+                    print(f"[Apple Music Debug] Downgrading codec to AAC as ALAC is unavailable for this track (Traits: {traits})")
+                local_effective_codec = GamdlSongCodec.AAC_WEB
+            elif local_effective_codec == GamdlSongCodec.ATMOS and not ('atmos' in traits or 'spatial' in traits):
+                if 'lossless' in traits or 'hi-res-lossless' in traits:
+                    if self._debug:
+                        print(f"[Apple Music Debug] Downgrading codec to ALAC as ATMOS is unavailable for this track (Traits: {traits})")
+                    local_effective_codec = GamdlSongCodec.ALAC
+                else:
+                    if self._debug:
+                        print(f"[Apple Music Debug] Downgrading codec to AAC as ATMOS and ALAC are unavailable for this track (Traits: {traits})")
+                    local_effective_codec = GamdlSongCodec.AAC_WEB
 
-        # Ensure gamdl components are initialized (downloader and downloader_song)
+            # 3. Ensure gamdl components are initialized, passing overrides if present
+            with self._gamdl_quiet():
+                await self._initialize_gamdl_components(song_codec=local_effective_codec, use_wrapper=override_use_wrapper)
+            
+            # Update quality_tier on our custom interface before each download
+            if hasattr(self.gamdl_song_interface, 'quality_tier'):
+                self.gamdl_song_interface.quality_tier = quality_tier
 
-        print(f"[Apple Music] Checking gamdl components: downloader_song={self.gamdl_downloader_song is not None}, downloader={self.gamdl_downloader is not None}")
-        if not self.gamdl_downloader_song or not self.gamdl_downloader:
-
-            print("[Apple Music] gamdl components not initialized, calling _initialize_gamdl_components...")
-            self._initialize_gamdl_components() # This method should set up self.gamdl_downloader and self.gamdl_downloader_song
-
-            print(f"[Apple Music] After init: downloader_song={self.gamdl_downloader_song is not None}, downloader={self.gamdl_downloader is not None}")
             if not self.gamdl_downloader_song or not self.gamdl_downloader:
+                wrapper_requested = bool(
+                    override_use_wrapper if override_use_wrapper is not None else self.use_wrapper
+                )
+                raise DownloadError(self._gamdl_init_failure_message(wrapper_requested=wrapper_requested))
+            
+            # Sanitize song_data: Ensure relationships is a dict, not None, to avoid TypeError in gamdl/tagging
+            if song_data and song_data.get('relationships') is None:
+                song_data['relationships'] = {}
+            
+            # Filter generic "Music" genre so it doesn't end up in gamdl's internal tagging
+            if song_data and 'attributes' in song_data and 'genreNames' in song_data['attributes']:
+                song_data['attributes']['genreNames'] = [g for g in song_data['attributes']['genreNames'] if g.lower() != 'music']
+            
+            # 2. Build and populate AppleMusicMedia via gamdl song interface
+            if self._debug:
+                print(f"[Apple Music Debug] Getting download item for track {song_data.get('id')}...")
 
-                print("[Apple Music Error] gamdl components failed to initialize.")
-                raise DownloadError("Apple Music: gamdl components could not be initialized for download.")
-        
-        if self._debug:
-            print(f"[Apple Music Debug] Using gamdl song_codec: {self.gamdl_downloader_song.codec.name if hasattr(self.gamdl_downloader_song.codec, 'name') else self.gamdl_downloader_song.codec}")
+            media = AppleMusicMedia(
+                media_id=song_data.get('id'),
+                media_metadata=song_data,
+                is_library=bool(kwargs.get('is_library')),
+            )
+
+            with self._gamdl_quiet():
+                try:
+                    async for populated_media in self.gamdl_song_interface.get_media(media):
+                        media = populated_media
+                except StopIteration as si:
+                    if self._debug:
+                        print(f"[Apple Music Error] StopIteration during get_media: {si}")
+                        try:
+                            attrs = song_data.get('attributes', {})
+                            ext_assets = attrs.get('extendedAssetUrls', {})
+                            hls_url = ext_assets.get('enhancedHls')
+                            print(f"[Apple Music Debug] Enhanced HLS URL present: {bool(hls_url)}")
+                            if hls_url:
+                                try:
+                                    response = await AppleMusicBaseInterface.get_response(hls_url)
+                                    import m3u8
+                                    m3u8_master = m3u8.loads(response.text)
+                                    flavors = [p['stream_info']['audio'] for p in m3u8_master.data.get('playlists', [])]
+                                    print(f"[Apple Music Debug] Available flavors in playlist: {flavors}")
+                                    print(f"[Apple Music Debug] Requested codec: {local_effective_codec}")
+                                except Exception:
+                                    print("[Apple Music Debug] Could not fetch/parse HLS flavors for diagnostics.")
+                        except Exception:
+                            pass
+                    raise DownloadError(f"Apple Music: Download failed - StopIteration: {si}. This often means the requested quality/flavor is unavailable for this track.") from si
+                except Exception as e:
+                    if self._debug:
+                        print(f"[Apple Music Error] Failed to prepare media: {type(e).__name__}: {e}")
+
+                    self._maybe_raise_alac_wrapper_error(e, local_effective_codec)
+                    if self._is_wrapper_auth_error(str(e)):
+                        raise DownloadError(self._wrapper_not_authenticated_message()) from e
+                    raise DownloadError(f"Apple Music: Failed to prepare download - {type(e).__name__}: {e}") from e
+
+                if media.error:
+                    if self._debug:
+                        print(f"[Apple Music Error] media contains error: {media.error}")
+                    raise media.error
+
+                try:
+                    download_item = await self.gamdl_song_downloader.get_download_item(media)
+                except Exception as e:
+                    if self._debug:
+                        print(f"[Apple Music Error] Failed to get download item: {type(e).__name__}: {e}")
+
+                    self._maybe_raise_alac_wrapper_error(e, local_effective_codec)
+                    if self._is_wrapper_auth_error(str(e)):
+                        raise DownloadError(self._wrapper_not_authenticated_message()) from e
+                    raise DownloadError(f"Apple Music: Failed to prepare download - {type(e).__name__}: {e}") from e
+
+                if download_item.media.error:
+                    if self._debug:
+                        print(f"[Apple Music Error] download_item contains error: {download_item.media.error}")
+                    raise download_item.media.error
+
+            # 4. Check for silent quality fallback (e.g. ALAC/Atmos requested but AAC returned)
+            requested_codec_val = local_effective_codec.value if hasattr(local_effective_codec, 'value') else str(local_effective_codec)
+            
+            stream_info = download_item.media.stream_info.audio_track if download_item.media.stream_info else None
+            actual_codec_val = stream_info.codec if stream_info else None
+            
+            if self._debug:
+                print(f"[Apple Music Debug] internal stream codec (actual_codec_val): {actual_codec_val}")
+            
+            if requested_codec_val == 'alac' and (
+                actual_codec_val is None or not self._is_alac_stream_codec(actual_codec_val)
+            ):
+                wrapper_enabled = override_use_wrapper if override_use_wrapper is not None else self._wrapper_enabled()
+                if not wrapper_enabled:
+                    raise DownloadError(self._alac_requires_wrapper_message())
+                raise DownloadError("Apple Music: Could not obtain ALAC stream for this track.")
+            elif requested_codec_val == 'atmos' and (
+                actual_codec_val is None or not self._is_atmos_stream_codec(actual_codec_val)
+            ):
+                raise DownloadError("Apple Music: Could not obtain Dolby Atmos stream for this track.")
+
+            # 5. Download and process
+            codec_name = local_effective_codec.name if hasattr(local_effective_codec, 'name') else str(local_effective_codec)
+            
+            stream_info = download_item.media.stream_info.audio_track if download_item.media.stream_info else None
+            if self._debug and stream_info and getattr(stream_info, 'width', None) and getattr(stream_info, 'height', None):
+                # This is likely a video stream if it has width/height, but for audio we just print codec
+                print(f"{indent_spaces}Detected Stream: {codec_name} ({stream_info.width}x{stream_info.height})")
+            
+            if self._debug:
+                print(f"{indent_spaces}Downloading and processing {codec_name} track...")
+            # Implementation of retry loop for wrapper connection
+            max_retries = 1000 # Effectively infinite for a reasonable time
+            retry_wait = 10 # Seconds
+            restarted_wrapper = False
+            
+            for attempt in range(max_retries):
+                try:
+                    with self._gamdl_quiet():
+                        await self.gamdl_downloader.download(download_item)
+                    
+                    # Sanity check for extremely small files (e.g. 1.5MB for multi-minute ALAC)
+                    final_path = Path(download_item.final_path)
+                    if final_path.exists():
+                        file_size = final_path.stat().st_size
+                        duration_sec = 0
+                        try:
+                            attrs = download_item.media.media_metadata.get('attributes', {})
+                            duration_ms = attrs.get('durationInMillis')
+                            if duration_ms: duration_sec = duration_ms // 1000
+                        except: pass
+                        
+                        if requested_codec_val in ['alac', 'atmos'] and duration_sec > 30 and file_size < 2000000:
+                             isrc = download_item.media.media_metadata.get('attributes', {}).get('isrc')
+                             if isrc and not kwargs.get('_is_retry'):
+                                 if self._debug:
+                                     print(f"[Apple Music Warning] Downloaded file is too small ({file_size} bytes). Likely a preview.")
+                                     print(f"                     Attempting to find a better ID for ISRC {isrc} in {self.account_storefront}...")
+                                 
+                                 # Try to find the track again in our account storefront specifically
+                                 equiv_id = self._get_equivalent_track_id(isrc, self.account_storefront)
+                                 if equiv_id and equiv_id != track_id:
+                                     if self._debug:
+                                         print(f"[Apple Music Debug] Found different ID {equiv_id} for ISRC {isrc}. Retrying download...")
+                                     # Cleanup the small file
+                                     try: final_path.unlink()
+                                     except: pass
+                                     # Recursive call with retry flag
+                                     new_kwargs = kwargs.copy()
+                                     new_kwargs['_is_retry'] = True
+                                     new_kwargs['api_response'] = None # Force fresh lookup
+                                     return await self.get_track_download(equiv_id, quality_tier, codec_options, **new_kwargs)
+
+                             if self._debug:
+                                 print(f"[Apple Music Error] Downloaded file is suspiciously small ({file_size} bytes for {duration_sec}s). Likely a preview.")
+                             raise DownloadError(f"Apple Music: The downloaded {requested_codec_val.upper()} file is corrupt or a preview (too small).")
+                    
+                    break # Success!
+                    
+                except Exception as e:
+                    error_str = str(e)
+                    # Check for amdecrypt connection error (agent not running)
+                    conn_indicators = ["10061", "127.0.0.1", "connectionrefused", "refused", "geweigerd", "dial tcp", "connect error"]
+                    if any(ind in error_str.lower() for ind in conn_indicators) or isinstance(e, ConnectionRefusedError):
+                        # Play audible notification if enabled
+                        if getattr(self.module_controller.orpheus_options, 'play_sound_on_finish', True):
+                            try:
+                                current_platform = platform.system()
+                                if current_platform == "Windows":
+                                    import winsound
+                                    winsound.PlaySound("SystemHand", winsound.SND_ALIAS | winsound.SND_ASYNC)
+                                elif current_platform == "Darwin":
+                                    import subprocess
+                                    subprocess.Popen(["afplay", "/System/Library/Sounds/Sosumi.aiff"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            except Exception as sound_e:
+                                if self._debug:
+                                    print(f"[Apple Music Warning] Could not play retry sound: {sound_e}")
+                        
+                        print(f"{indent_spaces}Connection to the local decryption service (Wrapper) failed.")
+                        
+                        # Attempt to restart the wrapper if a command is configured and it's the first retry
+                        restart_command = self.settings.get('wrapper_restart_command')
+                        if restart_command and not restarted_wrapper:
+                            print(f"{indent_spaces}Attempting to restart decryption wrapper: {restart_command}")
+                            try:
+                                import subprocess
+                                # Execute the restart command in the background
+                                subprocess.run(restart_command, shell=True, capture_output=True, text=True)
+                                restarted_wrapper = True
+                                # Extra wait for service to initialize after restart command
+                                await asyncio.sleep(5)
+                            except Exception as restart_e:
+                                print(f"{indent_spaces}Wrapper restart command failed: {restart_e}")
+                        
+                        print(f"{indent_spaces}Waiting {retry_wait}s for restoration before retrying download...")
+                        await asyncio.sleep(retry_wait)
+                        continue
+                    
+                    if self._debug:
+                        print(f"[Apple Music Error] gamdl download failed: {type(e).__name__}: {e}")
+                    raise DownloadError(f"Apple Music: Download execution failed - {type(e).__name__}: {e}") from e
+            
+            return download_item
 
         try:
-            # 1. Get full track metadata (primarily for stream info URL and PSSH)
-            # gamdl's get_song is robust for this, even if some data isn't directly used by Orpheus tags later
+            # Explicitly pass target storefront to ensure background loop worker sets it correctly
+            target_st = kwargs.get('effective_storefront') or kwargs.get('country') or self.account_storefront
             if self._debug:
-                print(f"[Apple Music Debug] Fetching full track metadata for {track_id} using apple_music_api.get_song...")
-            
-            with suppress_gamdl_debug():
-                gamdl_track_metadata_full = self.apple_music_api.get_song(track_id)
-            if not gamdl_track_metadata_full:
-                print(f"[Apple Music Error] Failed to get full metadata for track {track_id} from AppleMusicApi.")
-                raise DownloadError(f"Apple Music: Failed to get full metadata for track {track_id}")
-
-            # 1.5. Get webplayback data (CRITICAL for correct PSSH extraction)
-            # This is what standalone gamdl does and OrpheusDL was missing!
-            if self._debug:
-                print(f"[Apple Music Debug] Getting webplayback data for track {track_id} using apple_music_api.get_webplayback...")
-            with suppress_gamdl_debug():
-                webplayback_data = self.apple_music_api.get_webplayback(track_id)
-            if not webplayback_data:
-                print(f"[Apple Music Error] Failed to get webplayback data for track {track_id} from AppleMusicApi.")
-                raise DownloadError(f"Apple Music: Failed to get webplayback data for track {track_id}")
-
-            # 2. Get stream information from gamdl (contains stream_url, PSSH, etc.)
-            # Use the original track metadata for get_stream_info, which is what standalone gamdl does
-            if self._debug:
-                print(f"[Apple Music Debug] Getting stream info for track {track_id} using gamdl_downloader_song.get_stream_info...")
-            
-            # Handle legacy vs regular codecs like standalone gamdl does
-            if self.gamdl_downloader_song.codec in LEGACY_CODECS:
-                # For legacy codecs, use DownloaderSongLegacy.get_stream_info() with webplayback data
-                if self._debug:
-                    print(f"[Apple Music Debug] Using legacy codec path for {self.gamdl_downloader_song.codec.name}")
-                legacy_downloader_song = DownloaderSongLegacy(
-                    downloader=self.gamdl_downloader,
-                    codec=self.gamdl_downloader_song.codec
-                )
-                gamdl_stream_info = legacy_downloader_song.get_stream_info(webplayback_data)
-            else:
-                # For regular codecs, use track metadata
-                if self._debug:
-                    print(f"[Apple Music Debug] Using regular codec path for {self.gamdl_downloader_song.codec.name}")
-                gamdl_stream_info = self.gamdl_downloader_song.get_stream_info(gamdl_track_metadata_full)
-            
-            if not gamdl_stream_info or not gamdl_stream_info.stream_url:
-                print(f"[Apple Music Error] Failed to get stream_info or stream_url from gamdl for track {track_id}.")
-                raise DownloadError(f"Apple Music: Failed to get stream_info or stream_url from gamdl for track {track_id}")
-            if self._debug:
-                print(f"[Apple Music Debug] Obtained stream_url: {gamdl_stream_info.stream_url}")
-            if gamdl_stream_info.widevine_pssh:
-                if self._debug:
-                    print(f"[Apple Music Debug] Obtained PSSH (first 10 chars): {gamdl_stream_info.widevine_pssh[:10]}...")
-            else:
-                if self._debug:
-                    print("[Apple Music Warning] No Widevine PSSH found in stream_info.")
-                # Depending on content type (e.g. some ALAC might not be DRM'd, or DRM type differs), this might be an issue or not.
-                # For typical AAC from Apple Music, PSSH is expected.
-
-            # 3. Define encrypted file path (using gamdl's path generation for consistency)
-            # temp_path for gamdl_downloader was set during _initialize_gamdl_components
-            encrypted_path = self.gamdl_downloader_song.get_encrypted_path(track_id) # get_encrypted_path is method of DownloaderSong
-            encrypted_path.parent.mkdir(parents=True, exist_ok=True) # Ensure temp directory exists
-            if self._debug:
-                print(f"[Apple Music Debug] Encrypted file will be at: {encrypted_path}")
-
-            # 4. Download the encrypted stream using gamdl's Downloader instance
-            # The actual download (e.g. YTDLP) happens inside gamdl_downloader.download()
-            # self.gamdl_downloader.silent is False, so yt-dlp should be verbose.
-            print(f"{indent_spaces}Downloading encrypted stream...")
-            self.gamdl_downloader.download(encrypted_path, gamdl_stream_info.stream_url)
-            
-            # --- DEBUG LOGGING FOR ENCRYPTED FILE ---
-            if self._debug:
-                print(f"[Orpheus DEBUG] Post-download check for encrypted file: {encrypted_path}")
-            if encrypted_path.exists():
-                file_size = encrypted_path.stat().st_size
-                if self._debug:
-                    print(f"[Orpheus DEBUG] Encrypted file exists. Size: {file_size} bytes")
-                if file_size == 0:
-                    print("[Apple Music Error] Encrypted file is 0 bytes. Download failed.")
-            else:
-                print("[Apple Music Error] Encrypted file was not created after download attempt.")
-                raise DownloadError(f"Apple Music: Encrypted file not created at {encrypted_path}")
-            # --- END DEBUG LOGGING ---
-
-            # 5. Get decryption key
-            print(f"{indent_spaces}Getting decryption key...")
-            
-            # Handle legacy vs regular codec decryption and remuxing - they have different workflows
-            if self.gamdl_downloader_song.codec in LEGACY_CODECS:
-                # For legacy codecs, get decryption key using legacy method
-                if self._debug:
-                    print(f"[Apple Music Debug] Using legacy decryption key method for {self.gamdl_downloader_song.codec.name}")
-                legacy_downloader_song = DownloaderSongLegacy(
-                    downloader=self.gamdl_downloader,
-                    codec=self.gamdl_downloader_song.codec
-                )
-                with suppress_gamdl_debug():
-                    decryption_key = legacy_downloader_song.get_decryption_key(
-                        gamdl_stream_info.widevine_pssh, track_id
-                    )
+                print(f"[Apple Music Debug] Starting download async for {track_id} on storefront '{target_st}'")
                 
-                # For legacy codecs, the remux method handles both decryption and remuxing in one step
-                if self._debug:
-                    print(f"[Apple Music Debug] Using legacy codec flow for {self.gamdl_downloader_song.codec.name}")
+            download_item = self._run_async(lambda s: _download_async(), storefront=target_st)
+            
+            # Set flag for rich tagging
+            self._using_rich_tagging = True
+            
+            if self._debug:
+                print(f"[Apple Music Success] Download completed: {download_item.final_path}")
                 
-                # Skip manual decryption for legacy codecs - remux handles it
-                remuxed_path = self.gamdl_downloader_song.get_remuxed_path(track_id)
-                if self._debug:
-                    print(f"[Apple Music Debug] Remuxed file will be at: {remuxed_path}")
-                    print(f"[Apple Music Debug] Legacy remux will handle both decryption and remuxing")
-                
-                # Legacy remux signature: (encrypted_path, decrypted_path, remuxed_path, decryption_key)
-                # For FFMPEG mode, it uses encrypted_path and decryption_key directly
-                # For MP4BOX mode, it first decrypts to decrypted_path, then remuxes
-                print(f"{indent_spaces}Processing with legacy remux...")
-                decrypted_path = self.gamdl_downloader_song.get_decrypted_path(track_id)
-                legacy_downloader_song.remux(
-                    encrypted_path, decrypted_path, remuxed_path, decryption_key
-                )
-                if self._debug:
-                    print(f"[Apple Music Debug] Legacy remux call completed.")
-                
-                # Check remuxed file
-                if remuxed_path.exists() and remuxed_path.stat().st_size > 1048576:  # At least 1MB for a valid song
-                    if self._debug:
-                        print(f"[Apple Music Success] Remuxed file created successfully: {remuxed_path}, Size: {remuxed_path.stat().st_size} bytes")
-                    
-                    # Apply gamdl's rich tagging system to preserve Apple Music metadata
-                    try:
-                        print(f"{indent_spaces}Applying Apple Music metadata...")
-                        
-                        # Extract rich metadata using gamdl's get_tags method
-                        if self.gamdl_downloader_song.codec in LEGACY_CODECS:
-                            # For legacy codecs, get tags from webplayback data
-                            rich_tags = legacy_downloader_song.get_tags(webplayback_data, None)  # No lyrics for now
-                        else:
-                            # For regular codecs, get tags from webplayback data
-                            rich_tags = self.gamdl_downloader_song.get_tags(webplayback_data, None)  # No lyrics for now
-                        
-                        if self._debug:
-                            print(f"[Apple Music Metadata] Extracted {len(rich_tags)} rich metadata fields")
-                        
-                        # Apply rich metadata using gamdl's apply_tags method
-                        # Get cover URL from track metadata for artwork
-                        cover_url = None
-                        if 'attributes' in gamdl_track_metadata_full and 'artwork' in gamdl_track_metadata_full['attributes']:
-                            artwork_template = gamdl_track_metadata_full['attributes']['artwork'].get('url')
-                            if artwork_template:
-                                cover_url = artwork_template.replace('{w}x{h}bb.jpg', '1400x1400bb.jpg')
-                        
-                        # Apply the rich tags to the remuxed file
-                        self.gamdl_downloader.apply_tags(
-                            remuxed_path,
-                            rich_tags,
-                            cover_url
-                        )
-                        
-                        if self._debug:
-                            print(f"[Apple Music Metadata] Successfully applied rich Apple Music metadata")
-                        
-                        # Set flag to prevent OrpheusDL from overwriting rich metadata
-                        self._using_rich_tagging = True
-                        
-                        # Return as TEMP_FILE_PATH since DIRECT_FILE_PATH doesn't exist
-                        # The rich metadata has been applied, so OrpheusDL should preserve it
-                        return TrackDownloadInfo(
-                            download_type=DownloadEnum.TEMP_FILE_PATH,
-                            temp_file_path=str(remuxed_path)
-                        )
-                        
-                    except Exception as tagging_error:
-                        if self._debug:
-                            print(f"[Apple Music Metadata] Rich tagging failed: {tagging_error}")
-                        # Fall back to OrpheusDL tagging
-                        print(f"{indent_spaces}Rich tagging failed, using OrpheusDL tagging")
-                    
-                    # Fallback to temp file for OrpheusDL tagging if rich tagging failed
-                    return TrackDownloadInfo(
-                        download_type=DownloadEnum.TEMP_FILE_PATH,
-                        temp_file_path=str(remuxed_path)
-                    )
-            else:
-                # For regular codecs, get decryption key using regular method
-                if self._debug:
-                    print(f"[Apple Music Debug] Using regular decryption key method for {self.gamdl_downloader_song.codec.name}")
-                processed_pssh_b64 = gamdl_stream_info.widevine_pssh
-                if processed_pssh_b64.startswith("data:"):
-                    try:
-                        # Expected format: data:[<mediatype>][;base64],<data>
-                        # We need to get the part after "base64,"
-                        processed_pssh_b64 = processed_pssh_b64.split(';base64,')[1]
-                        if self._debug:
-                            print(f"[Apple Music Debug] Extracted base64 PSSH from data URI (first 10 chars): {processed_pssh_b64[:10]}...")
-                    except IndexError:
-                        print(f"[Apple Music Error] Could not parse base64 PSSH from data URI: {gamdl_stream_info.widevine_pssh}")
-                        raise DownloadError("Apple Music: Malformed PSSH data URI.")
+            return TrackDownloadInfo(
+                download_type=DownloadEnum.TEMP_FILE_PATH,
+                temp_file_path=str(download_item.final_path)
+            )
 
-                with suppress_gamdl_debug():
-                    decryption_key = self.gamdl_downloader.get_decryption_key( # get_decryption_key is method of Downloader
-                        processed_pssh_b64, # Pass the processed PSSH
-                        track_id,
-                        gamdl_stream_info.stream_url # Pass the HLS manifest URL
-                    )
-
-                # --- DEBUG LOGGING FOR DECRYPTION KEY ---
-                if self._debug:
-                    print(f"[Orpheus DEBUG] Obtained decryption key: {'*' * len(decryption_key) if decryption_key else 'None'}") # Avoid logging full key
-                    # Accessing DEFAULT_DECRYPTION_KEY from DownloaderSong class
-                    if decryption_key == DownloaderSong.DEFAULT_DECRYPTION_KEY:
-                        print(f"[Orpheus DEBUG] WARNING: Using gamdl's default (likely incorrect) decryption key! Real key acquisition failed.")
-                    elif not decryption_key:
-                         print(f"[Orpheus DEBUG] ERROR: Decryption key is None or empty. Cannot decrypt.")
-                         raise DownloadError("Apple Music: Failed to obtain a valid decryption key.")
-                # --- END DEBUG LOGGING ---
-
-                # 6. Define decrypted file path for regular codecs
-                decrypted_path = self.gamdl_downloader_song.get_decrypted_path(track_id)
-                if self._debug:
-                    print(f"[Apple Music Debug] Decrypted file will be at: {decrypted_path}")
-
-                # 7. Decrypt the file using gamdl's DownloaderSong instance
-                print(f"{indent_spaces}Decrypting file...")
-                self.gamdl_downloader_song.decrypt(encrypted_path, decrypted_path, decryption_key)
-                if self._debug:
-                    print(f"[Apple Music Debug] Decryption call completed.")
-
-                # 8. Remux the decrypted file
-                remuxed_path = self.gamdl_downloader_song.get_remuxed_path(track_id)
-                if self._debug:
-                    print(f"[Apple Music Debug] Remuxed file will be at: {remuxed_path}")
-                    print(f"[Apple Music Debug] Using regular remux method for {self.gamdl_downloader_song.codec.name}")
-                print(f"{indent_spaces}Remuxing audio file...")
-                self.gamdl_downloader_song.remux(decrypted_path, remuxed_path, gamdl_stream_info.codec)
-                if self._debug:
-                    print(f"[Apple Music Debug] Remux call completed.")
-
-                # 9. Check remuxed file and return TrackDownloadInfo
-                if remuxed_path.exists() and remuxed_path.stat().st_size > 1048576:  # At least 1MB for a valid song
-                    if self._debug:
-                        print(f"[Apple Music Success] Remuxed file created successfully: {remuxed_path}, Size: {remuxed_path.stat().st_size} bytes")
-                    
-                    # Apply gamdl's rich tagging system to preserve Apple Music metadata
-                    try:
-                        print(f"{indent_spaces}Applying Apple Music metadata...")
-                        
-                        # Extract rich metadata using gamdl's get_tags method
-                        if self.gamdl_downloader_song.codec in LEGACY_CODECS:
-                            # For legacy codecs, get tags from webplayback data
-                            rich_tags = legacy_downloader_song.get_tags(webplayback_data, None)  # No lyrics for now
-                        else:
-                            # For regular codecs, get tags from webplayback data
-                            rich_tags = self.gamdl_downloader_song.get_tags(webplayback_data, None)  # No lyrics for now
-                        
-                        if self._debug:
-                            print(f"[Apple Music Metadata] Extracted {len(rich_tags)} rich metadata fields")
-                        
-                        # Apply rich metadata using gamdl's apply_tags method
-                        # Get cover URL from track metadata for artwork
-                        cover_url = None
-                        if 'attributes' in gamdl_track_metadata_full and 'artwork' in gamdl_track_metadata_full['attributes']:
-                            artwork_template = gamdl_track_metadata_full['attributes']['artwork'].get('url')
-                            if artwork_template:
-                                cover_url = artwork_template.replace('{w}x{h}bb.jpg', '1400x1400bb.jpg')
-                        
-                        # Apply the rich tags to the remuxed file
-                        self.gamdl_downloader.apply_tags(
-                            remuxed_path,
-                            rich_tags,
-                            cover_url
-                        )
-                        
-                        if self._debug:
-                            print(f"[Apple Music Metadata] Successfully applied rich Apple Music metadata")
-                        
-                        # Set flag to prevent OrpheusDL from overwriting rich metadata
-                        self._using_rich_tagging = True
-                        
-                        # Return as TEMP_FILE_PATH since DIRECT_FILE_PATH doesn't exist
-                        # The rich metadata has been applied, so OrpheusDL should preserve it
-                        return TrackDownloadInfo(
-                            download_type=DownloadEnum.TEMP_FILE_PATH,
-                            temp_file_path=str(remuxed_path)
-                        )
-                        
-                    except Exception as tagging_error:
-                        if self._debug:
-                            print(f"[Apple Music Metadata] Rich tagging failed: {tagging_error}")
-                        # Fall back to OrpheusDL tagging
-                        print(f"{indent_spaces}Rich tagging failed, using OrpheusDL tagging")
-                    
-                    # Fallback to temp file for OrpheusDL tagging if rich tagging failed
-                    return TrackDownloadInfo(
-                        download_type=DownloadEnum.TEMP_FILE_PATH,
-                        temp_file_path=str(remuxed_path)
-                    )
-                else:
-                    file_size = remuxed_path.stat().st_size if remuxed_path.exists() else 0
-                    if self._debug:
-                        print(f"[Apple Music Warning] Remuxed file {remuxed_path} is too small ({file_size} bytes) or missing after legacy remux attempt.")
-                    
-                    # For legacy codecs, manually decrypt as fallback since legacy remux failed
-                    print(f"{indent_spaces}Remux failed, trying manual decryption fallback...")
-                    
-                    # Check if encrypted file is still valid
-                    if encrypted_path.exists() and encrypted_path.stat().st_size > 1048576:
-                        try:
-                            # Manually decrypt using the legacy downloader_song decrypt method
-                            legacy_downloader_song.decrypt(encrypted_path, decrypted_path, decryption_key)
-                            if self._debug:
-                                print(f"[Apple Music Fallback] Manual decryption completed.")
-                            
-                            # Check if decrypted file was created successfully
-                            if decrypted_path.exists() and decrypted_path.stat().st_size > 1048576:
-                                if self._debug:
-                                    print(f"[Apple Music Fallback] Manual decryption successful. Now attempting to remux decrypted file...")
-                                
-                                # Try to remux the decrypted file using FFmpeg directly
-                                try:
-                                    import subprocess
-                                    ffmpeg_path = self.gamdl_downloader.ffmpeg_path_full
-                                    if not ffmpeg_path:
-                                        ffmpeg_path = "ffmpeg"  # Fallback to system PATH
-                                    
-                                    # Create a final remuxed path
-                                    final_remuxed_path = decrypted_path.parent / f"{track_id}_final_remuxed.m4a"
-                                    
-                                    # Use FFmpeg to remux the decrypted HLS fragment into proper MP4
-                                    cmd = [
-                                        ffmpeg_path,
-                                        "-i", str(decrypted_path),
-                                        "-c", "copy",  # Copy streams without re-encoding
-                                        "-movflags", "+faststart",  # Optimize for streaming
-                                        "-y",  # Overwrite output file
-                                        str(final_remuxed_path)
-                                    ]
-                                    
-                                    if self._debug:
-                                        print(f"[Apple Music Fallback] Running FFmpeg remux: {' '.join(cmd[:3])} ... {final_remuxed_path}")
-                                    result = subprocess.run(cmd, capture_output=True, text=True, **self.gamdl_downloader.subprocess_additional_args)
-                                    
-                                    if result.returncode == 0 and final_remuxed_path.exists() and final_remuxed_path.stat().st_size > 1048576:
-                                        if self._debug:
-                                            print(f"[Apple Music Fallback] FFmpeg remux successful: {final_remuxed_path}, Size: {final_remuxed_path.stat().st_size} bytes")
-                                        return TrackDownloadInfo(
-                                            download_type=DownloadEnum.TEMP_FILE_PATH,
-                                            temp_file_path=str(final_remuxed_path)
-                                        )
-                                    else:
-                                        if self._debug:
-                                            print(f"[Apple Music Fallback] FFmpeg remux failed. Return code: {result.returncode}")
-                                        if result.stderr and self._debug:
-                                            print(f"[Apple Music Fallback] FFmpeg error: {result.stderr}")
-                                        # Fall back to using decrypted file directly
-                                        if self._debug:
-                                            print(f"[Apple Music Fallback] Using decrypted file directly (may have playback issues): {decrypted_path}, Size: {decrypted_path.stat().st_size} bytes")
-                                        return TrackDownloadInfo(
-                                            download_type=DownloadEnum.TEMP_FILE_PATH,
-                                            temp_file_path=str(decrypted_path)
-                                        )
-                                        
-                                except Exception as remux_error:
-                                    if self._debug:
-                                        print(f"[Apple Music Fallback] FFmpeg remux failed with error: {remux_error}")
-                                    # Fall back to using decrypted file directly
-                                    if self._debug:
-                                        print(f"[Apple Music Fallback] Using decrypted file directly (may have playback issues): {decrypted_path}, Size: {decrypted_path.stat().st_size} bytes")
-                                    return TrackDownloadInfo(
-                                        download_type=DownloadEnum.TEMP_FILE_PATH,
-                                        temp_file_path=str(decrypted_path)
-                                    )
-                            else:
-                                if self._debug:
-                                    print(f"[Apple Music Error] Manual decryption failed - decrypted file too small or missing.")
-                        except Exception as decrypt_error:
-                            if self._debug:
-                                print(f"[Apple Music Error] Manual decryption failed with error: {decrypt_error}")
-                    
-                    print(f"[Apple Music Error] All fallback attempts failed for legacy codec.")
-                    raise DownloadError(f"Apple Music: All decryption and remux attempts failed for legacy codec.")
-
-        except AuthenticationError: # Re-raise auth errors
+        except AuthenticationError:
             raise
-        except DownloadError as de: # Re-raise download errors with context
-            if self._debug:
-                print(f"[Apple Music DownloadError] {de}")
+        except TrackUnavailableError:
+            raise
+        except DownloadError:
             raise
         except Exception as e:
             error_str = str(e)
-            # Check for specific "song unavailable" error from Apple Music
-            if '"failureType":"3076"' in error_str:
-                customer_message = "This song is unavailable." # Default message
-                try:
-                    # Attempt to parse the JSON part of the error string for a better message
-                    json_str = error_str[error_str.find('{'):error_str.rfind('}')+1]
-                    error_json = json.loads(json_str)
-                    message_from_api = error_json.get('customerMessage') or error_json.get('dialog', {}).get('message')
-                    if message_from_api:
-                        # Replace Apple's message with our shorter version
-                        if "currently unavailable" in message_from_api.lower():
-                            customer_message = "This song is unavailable."
-                        else:
-                            customer_message = message_from_api
-                except (json.JSONDecodeError, KeyError, IndexError):
-                    pass # Fallback to default message if parsing fails
-                raise TrackUnavailableError(customer_message) from e
-
-            if '"failureType":"2002"' in error_str or "Your session has ended" in error_str:
-                raise DownloadError('"cookies.txt" not found, invalid, or expired.')
-            
-            # Create a clean, concise error message
-            error_msg = str(e)
-            if "ConnectionError" in str(type(e)) or "NameResolutionError" in error_msg:
-                error_msg = "Network connection failed"
-            elif "HTTPSConnectionPool" in error_msg:
-                error_msg = "Unable to connect to Apple Music servers"
-            elif "Max retries exceeded" in error_msg:
-                error_msg = "Connection timeout"
-            elif "getaddrinfo failed" in error_msg:
-                error_msg = "DNS resolution failed"
-            
-            import traceback
             
             if self._debug:
-                print(f"[Apple Music Error] An unexpected error occurred in get_track_download for track {track_id}: {e}")
+                print(f"[Apple Music Error] Final catch in get_track_download for {track_id}: {type(e).__name__}: {e}")
+            
+            # Check for generic amdecrypt connection error strings in cases where it wasn't caught earlier
+            if "dial tcp" in error_str and ("refused" in error_str.lower() or "geweigerd" in error_str.lower() or "127.0.0.1" in error_str):
+                raise DownloadError(self._wrapper_connection_error_message()) from e
+            
+            if '"failureType":"3076"' in error_str:
+                raise TrackUnavailableError("This song is unavailable in your region (Error 3076).") from e
+            if "too small" in error_str.lower() or " preview" in error_str.lower():
+                raise DownloadError("This song is only available as a preview in your region. This usually means it's region-locked or your account cannot access the full track.") from e
+            if '"failureType":"2002"' in error_str or "Your session has ended" in error_str:
+                raise DownloadError('"cookies.txt" is invalid or expired.')
+            
+            if self._debug:
+                import traceback
+                print(f"[Apple Music Error] Download failed for track {track_id}: {type(e).__name__}: {e}")
                 print(traceback.format_exc())
-            raise DownloadError(f"Apple Music: Unexpected error during download of track {track_id} - {error_msg}")
+            
+            # Use original exception message if descriptive, else add type
+            final_msg = error_str if error_str and len(error_str) > 5 else f"{type(e).__name__}: {e}"
+            
+            # Improve FormatNotAvailable or other wrapper-related errors
+            requested_codec_name = codec_name if 'codec_name' in locals() else (override_song_codec or self.song_codec)
+            requested_codec_str = str(requested_codec_name.value if hasattr(requested_codec_name, 'value') else requested_codec_name).lower()
+            
+            conn_keywords = ["dial tcp", "refused", "geweigerd", "10061", "127.0.0.1", "connectionrefused", "connect error"]
+            if requested_codec_str == 'alac' and self._is_alac_license_restriction_error(final_msg):
+                final_msg = self._alac_requires_wrapper_message()
+            elif self._is_wrapper_auth_error(final_msg):
+                final_msg = self._wrapper_not_authenticated_message()
+            elif "FormatNotAvailable" in str(type(e)) or "FormatNotAvailable" in final_msg or \
+               any(k in final_msg.lower() for k in conn_keywords) or "connectionrefused" in str(type(e)).lower():
+                if requested_codec_str == 'alac':
+                    wrapper_enabled = override_use_wrapper if override_use_wrapper is not None else self._wrapper_enabled()
+                    if not wrapper_enabled:
+                        final_msg = self._alac_requires_wrapper_message()
+                    else:
+                        final_msg = self._wrapper_connection_error_message()
+                elif requested_codec_str == 'atmos':
+                    final_msg = "Apple Music: Could not obtain Dolby Atmos stream for this track."
+                        
+            raise DownloadError(final_msg) from e
 
-    def get_album_info(self, album_id: str, **kwargs) -> Optional[AlbumInfo]:
-        """Get album information"""
+    def get_track_lyrics(self, track_id: str, **kwargs) -> Optional[LyricsInfo]:
+        if not _lazy_import_gamdl():
+            return None
+            
+        # Use provided data if available to save an API call
+        song_data = kwargs.get('data')
+        
+        # If not provided, we need to fetch it (fallback)
+        if not song_data:
+            self._ensure_credentials()
+            
+            # Use background loop worker to set storefront correctly during fetch
+            country = kwargs.get('country')
+            song_metadata = self._run_async(lambda s: s.apple_music_api.get_song(track_id), storefront=country)
+            
+            if song_metadata and 'data' in song_metadata and song_metadata['data']:
+                song_data = song_metadata['data'][0]
+        
+        if not song_data:
+            return None
+            
+        # Initialize gamdl components if not done (needed for gamdl_song_interface)
+        # Use standard AAC as it doesn't matter for metadata
+        async def _fetch_lyrics():
+            await self._initialize_gamdl_components(song_codec=GamdlSongCodec.AAC_WEB)
+            if not self.gamdl_song_interface:
+                return None
+            return await self.gamdl_song_interface.get_lyrics(song_data)
+            
         try:
-            # Extract country from kwargs and set storefront
-            country = kwargs.get('data', {}).get('country')
+            lyrics = self._run_async(lambda s: _fetch_lyrics())
+            if lyrics:
+                return LyricsInfo(
+                    embedded=lyrics.unsynced,
+                    synced=lyrics.synced
+                )
+        except Exception as e:
+            if self._debug:
+                print(f"[Apple Music Debug] Failed to fetch lyrics for {track_id}: {e}")
+        
+        return None
+
+    def get_track_credits(self, track_id: str, data: Optional[Dict[str, Any]] = None, **kwargs) -> Optional[List[CreditsInfo]]:
+        # Use existing get_track_info to avoid duplicating extraction logic
+        # We pass allow_refetch=True to ensure we get labels/composers
+        track_info = self.get_track_info(track_id, QualityEnum.LOW, None, data=data, **kwargs)
+        if not track_info or not track_info.tags:
+            return []
+            
+        credits_dict = []
+        if track_info.tags.composer:
+            credits_dict.append(CreditsInfo(type='Composer', names=[track_info.tags.composer]))
+        if track_info.tags.label:
+            credits_dict.append(CreditsInfo(type='Label', names=[track_info.tags.label]))
+            
+        return credits_dict
+
+    def get_track_cover(self, track_id: str, cover_options: CoverOptions, data: Optional[Dict[str, Any]] = None, **kwargs) -> Optional[CoverInfo]:
+        # Use existing get_track_info to get the cover URL
+        track_info = self.get_track_info(track_id, QualityEnum.LOW, None, data=data, **kwargs)
+        if not track_info or not track_info.cover_url:
+            return None
+            
+        # Apple Music artwork URLs are templates, but get_track_info already resolves them 
+        # using the resolution from settings.
+        return CoverInfo(url=track_info.cover_url, file_type=ImageFileTypeEnum.jpg)
+
+
+    def get_album_info(self, album_id: str, data: Optional[Dict[str, Any]] = None, **kwargs) -> Optional[AlbumInfo]:
+        """Get album information (catalog works without cookies; download requires credentials)."""
+        try:
+            # Extract country from kwargs/data and set storefront
+            country = kwargs.get('country') or (data.get('country') if data else None) or (kwargs.get('data', {}).get('country') if isinstance(kwargs.get('data'), dict) else None)
             self._set_storefront(country)
 
-            album_data = self.apple_music_api.get_album(album_id)
+            # Check if full album data was passed in kwargs (from get_artist_info) or data
+            album_data = kwargs.get('data') or data
+            
+            # If data is a list (API response wrapper), unwrap it
+            if isinstance(album_data, list) and len(album_data) > 0:
+                album_data = album_data[0]
+            elif isinstance(album_data, dict) and 'data' in album_data:
+                album_data = album_data['data'][0]
+                
+            # If we don't have valid attributes, fetch from API
+            if not album_data or not isinstance(album_data, dict) or 'attributes' not in album_data:
+                if self._debug:
+                    print(f"[Apple Music Debug] Fetching full album info for {album_id}")
+                
+                is_library = kwargs.get('is_library', False) or str(album_id).startswith('l.')
+                if is_library:
+                    album_data = self._run_async(lambda s: s.apple_music_api.get_library_album(album_id), storefront=country)
+                else:
+                    album_data = self._run_async(lambda s: s.apple_music_api.get_album(album_id), storefront=country)
+                
+                if album_data and 'data' in album_data:
+                    album_data = album_data['data'][0]
+
+            # Handle pagination for large albums/compilations
+            if album_data.get('relationships') and 'tracks' in album_data['relationships']:
+                tracks_rel = album_data['relationships']['tracks']
+                if 'next' in tracks_rel:
+                    if self._debug:
+                        print(f"[Apple Music Debug] Album has more tracks, fetching pagination pages...")
+                    
+                    async def fetch_all_tracks(api, initial_rel):
+                        all_data = initial_rel.get('data', [])
+                        async for page in api.extend_api_data(initial_rel):
+                            all_data.extend(page.get('data', []))
+                        return all_data
+                    
+                    current_sf = self.apple_music_api.storefront
+                    try:
+                        paged_tracks = self._run_async(lambda s: fetch_all_tracks(s.apple_music_api, tracks_rel))
+                        if paged_tracks:
+                            if self._debug:
+                                print(f"[Apple Music Debug] Total album tracks after pagination: {len(paged_tracks)}")
+                            album_data['relationships']['tracks']['data'] = paged_tracks
+                    except Exception as e:
+                        if self._debug:
+                            print(f"[Apple Music Warning] Album pagination failed: {e}")
+                    finally:
+                        self.apple_music_api.storefront = current_sf
+            elif self._debug:
+                print(f"[Apple Music Debug] Using provided album data for {album_id}")
+
             attrs = album_data['attributes']
+            if 'url' in attrs:
+                attrs['url'] = self._localize_url(attrs['url'])
+                
+            album_artist = format_album_artist_tag(
+                attrs.get('albumArtistName') or attrs.get('artistName', '')
+            )
+            cover_url = self._get_cover_url(attrs.get('artwork', {}).get('url'))
+            album_release_date = attrs.get('releaseDate')
+            release_year = self._extract_year(album_release_date)
             
-            # Extract track IDs
-            track_ids = []
-            if 'relationships' in album_data and 'tracks' in album_data['relationships']:
-                track_ids = [track['id'] for track in album_data['relationships']['tracks']['data']]
+            # Extract record label, copyright and UPC (Barcode) from album attributes
+            record_label = attrs.get('recordLabel')
+            copyright_info = attrs.get('copyright')
+            upc = attrs.get('upc')
             
+            # --- Detailed Debug Logging ---
+            if self._debug:
+                print(f"[Apple Music Metadata Debug] Available keys for album {album_id}: {list(attrs.keys())}")
+                if copyright_info: print(f"[Apple Music Metadata Debug] Source Copyright: {copyright_info}")
+                if record_label: print(f"[Apple Music Metadata Debug] Source RecordLabel: {record_label}")
+            
+            if not record_label and copyright_info:
+                # Fallback: Extract from copyright string by stripping symbols and years
+                # Matches symbols like ℗, ©, (P), (C) and years
+                record_label = re.sub(r'^(?:℗|©|p|c|\(p\)|\(c\)|\u2117|\u00a9)\s*(?:\d{4})?\s*', '', copyright_info, flags=re.IGNORECASE).strip()
+                # If it still starts with a year or just the symbol, clean it further
+                record_label = re.sub(r'^\d{4}\s*', '', record_label).strip()
+
+            if self._debug and record_label:
+                print(f"[Apple Music Debug] Final extracted label/publisher: {record_label}")
+
+            # Use full track data from API when available to avoid N get_track_info calls in GUI
+            tracks_out = []
+            rel_tracks = (album_data.get('relationships') or {}).get('tracks', {}).get('data', [])
+            for idx, track in enumerate(rel_tracks, start=1):
+                t_attrs = track.get('attributes') or {}
+                if t_attrs:
+                    if 'url' in t_attrs:
+                        t_attrs['url'] = self._localize_url(t_attrs['url'])
+                    
+                    name = t_attrs.get('name') or f'Track {idx}'
+                    dur_ms = t_attrs.get('durationInMillis')
+                    duration_sec = (dur_ms // 1000) if isinstance(dur_ms, (int, float)) else None
+                    track_artist_attrs = dict(t_attrs)
+                    if not track_artist_attrs.get('artistName'):
+                        track_artist_attrs['artistName'] = album_artist
+                    track_artists = artists_from_apple_attrs(track_artist_attrs)
+
+                    additional = self._format_audio_traits(t_attrs, item_type='songs')
+
+                    # Extract preview URL (Apple Music provides 30-second previews)
+                    preview_url = None
+                    previews = t_attrs.get('previews', [])
+                    if previews and len(previews) > 0:
+                        preview_url = previews[0].get('url')
+
+                    # Pass through album-level label/copyright if song doesn't have it
+                    if record_label and 'recordLabel' not in t_attrs:
+                        t_attrs['recordLabel'] = record_label
+                    if copyright_info and 'copyright' not in t_attrs:
+                        t_attrs['copyright'] = copyright_info
+                    if upc and 'upc' not in t_attrs:
+                        t_attrs['upc'] = upc
+
+                    tracks_out.append({
+                        'id': track.get('id', ''),
+                        'name': name,
+                        'duration': duration_sec,
+                        'artists': track_artists,
+                        'release_year': release_year,
+                        'cover_url': self._get_cover_url(t_attrs.get('artwork', {}).get('url')) or cover_url,
+                        'preview_url': preview_url,
+                        # Pass full API data so get_track_info doesn't need to refetch
+                        'attributes': t_attrs,
+                        'relationships': track.get('relationships') or {},
+                        'type': track.get('type'),
+                        'additional': additional
+                    })
+                else:
+                    tracks_out.append(track.get('id', ''))
+            # Extract artist ID from relationships
+            artist_id = ''
+            if album_data.get('relationships') and 'artists' in album_data['relationships']:
+                artist_rels = album_data['relationships']['artists'].get('data', [])
+                if artist_rels:
+                    artist_id = artist_rels[0].get('id', '')
+
             return AlbumInfo(
                 name=attrs['name'],
-                artist=attrs.get('artistName', ''),
-                artist_id='',
-                cover_url=self._get_cover_url(attrs.get('artwork', {}).get('url')),
-                release_year=self._extract_year(attrs.get('releaseDate')),
-                tracks=track_ids,
-                track_extra_kwargs={'country': country}
+                artist=album_artist,
+                album_artist=album_artist,
+                artist_id=str(artist_id) if artist_id else None,
+                id=str(album_id),
+                quality=self._album_quality_label_from_attrs(attrs),
+                cover_url=cover_url,
+                release_year=release_year,
+                label=record_label,
+                upc=upc,
+                tracks=tracks_out,
+                expected_track_count=int(attrs['trackCount']) if attrs.get('trackCount') is not None else None,
+                track_extra_kwargs={
+                    **kwargs,
+                    'country': country,
+                    'album_release_date': album_release_date,
+                    'album_artist': album_artist,
+                },
             )
             
         except Exception as e:
             raise self.exception(f"Failed to get album info: {e}")
 
     def get_playlist_info(self, playlist_id, data: dict = None, **kwargs):
-        """Get playlist information"""
+        """Get playlist information (catalog works without cookies; download requires credentials)."""
         try:
             # Extract country from kwargs and set storefront
             country = kwargs.get('country') or (data.get('country') if data else None)
@@ -1385,42 +2604,123 @@ class ModuleInterface:
                     print(f"[Apple Music Debug] Using raw_result from search for playlist {playlist_id}")
                 
                 # Check if search result has track relationships - if not, fetch full data
-                if ('relationships' not in playlist_data or 
-                    'tracks' not in playlist_data.get('relationships', {}) or 
-                    not playlist_data['relationships']['tracks'].get('data')):
+                rels = playlist_data.get('relationships')
+                if (not rels or 
+                    'tracks' not in rels or 
+                    not rels['tracks'].get('data')):
                     if self._debug:
-                        print(f"[Apple Music Debug] Search result missing track data, fetching full playlist info...")
-                    playlist_data = self.apple_music_api.get_playlist(playlist_id)
+                         print(f"[Apple Music Debug] Search result missing track data, fetching full playlist info...")
+                    
+                    if str(playlist_id).startswith('p.') or kwargs.get('is_library'):
+                         playlist_data = self._run_async(lambda s: s.apple_music_api.get_library_playlist(playlist_id), storefront=country)
+                    else:
+                         playlist_data = self._run_async(lambda s: s.apple_music_api.get_playlist(playlist_id), storefront=country)
             else:
-                playlist_data = self.apple_music_api.get_playlist(playlist_id)
+                if str(playlist_id).startswith('p.') or kwargs.get('is_library'):
+                     playlist_data = self._run_async(lambda s: s.apple_music_api.get_library_playlist(playlist_id), storefront=country)
+                else:
+                     playlist_data = self._run_async(lambda s: s.apple_music_api.get_playlist(playlist_id), storefront=country)
+            
+            if playlist_data and 'data' in playlist_data:
+                playlist_data = playlist_data['data'][0]
+            
+            # Handle pagination for large playlists (library and catalog)
+            if playlist_data.get('relationships') and 'tracks' in playlist_data['relationships']:
+                tracks_rel = playlist_data['relationships']['tracks']
+                if 'next' in tracks_rel:
+                    if self._debug:
+                        print(f"[Apple Music Debug] Playlist has more tracks, fetching pagination pages...")
+                    
+                    async def fetch_all_tracks(api, initial_rel):
+                        all_data = initial_rel.get('data', [])
+                        async for page in api.extend_api_data(initial_rel):
+                            all_data.extend(page.get('data', []))
+                        return all_data
+                    
+                    # Store existing storefront to restore later if it changes during fetch
+                    current_sf = self.apple_music_api.storefront
+                    try:
+                        paged_tracks = self._run_async(lambda s: fetch_all_tracks(s.apple_music_api, tracks_rel))
+                        if paged_tracks:
+                            if self._debug:
+                                print(f"[Apple Music Debug] Total tracks after pagination: {len(paged_tracks)}")
+                            playlist_data['relationships']['tracks']['data'] = paged_tracks
+                    except Exception as e:
+                        if self._debug:
+                            print(f"[Apple Music Warning] Pagination failed, using available tracks: {e}")
+                    finally:
+                        self.apple_music_api.storefront = current_sf
             
             attrs = playlist_data['attributes']
+            if 'url' in attrs:
+                attrs['url'] = self._localize_url(attrs['url'])
             
-            # Extract track IDs
-            track_ids = []
-            if 'relationships' in playlist_data and 'tracks' in playlist_data['relationships']:
-                track_ids = [track['id'] for track in playlist_data['relationships']['tracks']['data']]
-            
+            cover_url = self._get_cover_url(attrs.get('artwork', {}).get('url'))
+            release_year = self._extract_year(attrs.get('lastModifiedDate'))
+            creator = attrs.get('curatorName', 'Unknown Creator')
+            # Use full track data from API when available to avoid N get_track_info calls in GUI (same as album)
+            tracks_out = []
+            rel_tracks = (playlist_data.get('relationships') or {}).get('tracks', {}).get('data', [])
+            for idx, track in enumerate(rel_tracks, start=1):
+                t_attrs = track.get('attributes') or {}
+                if t_attrs:
+                    if 'url' in t_attrs:
+                        t_attrs['url'] = self._localize_url(t_attrs['url'])
+                    
+                    name = t_attrs.get('name') or f'Track {idx}'
+                    dur_ms = t_attrs.get('durationInMillis')
+                    duration_sec = (dur_ms // 1000) if isinstance(dur_ms, (int, float)) else None
+                    track_artist_attrs = dict(t_attrs)
+                    if not track_artist_attrs.get('artistName'):
+                        track_artist_attrs['artistName'] = creator
+                    track_artists = artists_from_apple_attrs(track_artist_attrs)
+
+                    additional = self._format_audio_traits(t_attrs, item_type='songs')
+
+                    # Extract preview URL
+                    preview_url = None
+                    previews = t_attrs.get('previews', [])
+                    if previews and len(previews) > 0:
+                        preview_url = previews[0].get('url')
+
+                    tracks_out.append({
+                        'id': track.get('id', ''),
+                        'name': name,
+                        'duration': duration_sec,
+                        'artists': track_artists,
+                        'release_year': release_year,
+                        'cover_url': self._get_cover_url(t_attrs.get('artwork', {}).get('url')) or cover_url,
+                        'preview_url': preview_url,
+                        # Pass full API data so get_track_info doesn't need to refetch
+                        'attributes': t_attrs,
+                        'relationships': track.get('relationships') or {},
+                        'type': track.get('type'),
+                        'additional': additional
+                    })
+                else:
+                    tracks_out.append(track.get('id', ''))
             return PlaylistInfo(
                 name=attrs.get('name', 'Unknown Playlist'),
-                creator=attrs.get('curatorName', 'Unknown Creator'),
-                release_year=self._extract_year(attrs.get('lastModifiedDate')),
-                tracks=track_ids,
-                cover_url=self._get_cover_url(attrs.get('artwork', {}).get('url')),
-                track_extra_kwargs={'data': {}}
+                creator=creator,
+                release_year=release_year,
+                tracks=tracks_out,
+                cover_url=cover_url,
+                track_extra_kwargs={**kwargs, 'country': country}
             )
             
         except Exception as e:
             raise self.exception(f"Failed to get playlist info: {e}")
 
     def get_artist_info(self, artist_id, get_credited_albums=True, data: dict = None, **kwargs):
-        """Get artist information"""
+        """Get artist information (catalog works without cookies; download requires credentials)."""
         # Extract country from kwargs and set storefront
         country = kwargs.get('country') or (data.get('country') if data else None)
         self._set_storefront(country)
         
         # Reverting to the call without 'include' which seems to be more robust
-        artist_data = self.apple_music_api.get_artist(artist_id)
+        artist_data = self._run_async(lambda s: s.apple_music_api.get_artist(artist_id), storefront=country)
+        if artist_data and 'data' in artist_data:
+            artist_data = artist_data['data'][0]
         
         # Defensive check for API response structure. Expecting a dict.
         if not artist_data or not isinstance(artist_data, dict) or 'attributes' not in artist_data:
@@ -1429,23 +2729,388 @@ class ModuleInterface:
             raise self.exception(f"No data returned for artist ID {artist_id}. They may not be available on the '{self.apple_music_api.storefront}' storefront.")
 
         attrs = artist_data['attributes']
+        if 'url' in attrs:
+            attrs['url'] = self._localize_url(attrs['url'])
+            
+        artist_name = attrs.get('name', 'Unknown Artist')
+        cover_url_default = self._get_cover_url(attrs.get('artwork', {}).get('url'))
         
-        # Extract album IDs safely from relationships on the main object
-        albums = []
-        if 'relationships' in artist_data and 'albums' in artist_data['relationships']:
-            albums_data = artist_data['relationships']['albums'].get('data', [])
-            albums = [album['id'] for album in albums_data if 'id' in album]
+        albums_out = []
+        tracks_out = []
         
+        # Helper to process album data
+        def process_album_item(album_item):
+            a_attrs = album_item.get('attributes') or {}
+            if a_attrs:
+                if 'url' in a_attrs:
+                    a_attrs['url'] = self._localize_url(a_attrs['url'])
+                
+                name = a_attrs.get('name') or 'Unknown Album'
+                release_year = self._extract_year(a_attrs.get('releaseDate'))
+                album_artist = format_album_artist_tag(a_attrs.get('artistName') or artist_name)
+                item_cover_url = self._get_cover_url(a_attrs.get('artwork', {}).get('url')) or cover_url_default
+                
+                additional_parts = []
+                tc = a_attrs.get('trackCount')
+                if tc is not None and tc > 0:
+                    additional_parts.append("1 track" if tc == 1 else f"{tc} tracks")
+                
+                formatted_traits = self._format_audio_traits(a_attrs, item_type='albums')
+                if formatted_traits:
+                    additional_parts.append(formatted_traits)
+                    
+                additional = " / ".join(additional_parts)
+                
+                return {
+                    'id': album_item.get('id', ''),
+                    'name': name,
+                    'artist': album_artist,
+                    'release_year': release_year,
+                    'cover_url': item_cover_url,
+                    'additional': additional,
+                    'explicit': a_attrs.get('contentRating') == 'explicit',
+                    # Pass full API data so get_album_info doesn't need to refetch
+                    'attributes': a_attrs,
+                    'relationships': album_item.get('relationships'),
+                    'type': album_item.get('type')
+                }
+            return album_item.get('id', '')
+
+        # Process standard albums relationship
+        rel_albums = (artist_data.get('relationships') or {}).get('albums', {}).get('data', [])
+        for album in rel_albums:
+            albums_out.append(process_album_item(album))
+            
+        # Process extended views if available (GAMDL 2.8.5+)
+        views = artist_data.get('views', {})
+        
+        # Categorize other views as albums if they aren't 'top-songs'
+        for view_name, view_data in views.items():
+            view_items = view_data.get('data', [])
+            if view_name == 'top-songs':
+                for song_item in view_items:
+                    s_attrs = song_item.get('attributes') or {}
+                    if s_attrs:
+                        if 'url' in s_attrs:
+                            s_attrs['url'] = self._localize_url(s_attrs['url'])
+                        
+                        s_name = s_attrs.get('name') or 'Unknown Track'
+                        s_artist_attrs = dict(s_attrs)
+                        if not s_artist_attrs.get('artistName'):
+                            s_artist_attrs['artistName'] = artist_name
+                        s_artists = artists_from_apple_attrs(s_artist_attrs)
+                        dur_ms = s_attrs.get('durationInMillis')
+                        s_duration_sec = (dur_ms // 1000) if isinstance(dur_ms, (int, float)) else 0
+                        s_cover_url = self._get_cover_url(s_attrs.get('artwork', {}).get('url')) or cover_url_default
+                        
+                        s_additional = self._format_audio_traits(s_attrs, item_type='songs')
+                        
+                        tracks_out.append({
+                            'id': song_item.get('id', ''),
+                            'name': s_name,
+                            'artists': s_artists,
+                            'duration': s_duration_sec,
+                            'release_year': self._extract_year(s_attrs.get('releaseDate')),
+                            'cover_url': s_cover_url,
+                            'additional': s_additional,
+                            'attributes': s_attrs,
+                            'relationships': song_item.get('relationships'),
+                            'type': song_item.get('type')
+                        })
+            else:
+                # Add a separator or label for different categories in the name if desired
+                # For now, just add them all to albums_out as Orpheus expects
+                category_prefix = ""
+                if view_name == 'compilation-albums': category_prefix = "[Compilation] "
+                elif view_name == 'live-albums': category_prefix = "[Live] "
+                elif view_name == 'singles': category_prefix = "[Single/EP] "
+                
+                for album_item in view_items:
+                    processed = process_album_item(album_item)
+                    if isinstance(processed, dict) and category_prefix:
+                        processed['name'] = category_prefix + processed['name']
+                    albums_out.append(processed)
+        
+        # Batch fetch missing durations for albums
+        albums_to_fetch = [idx for idx, t in enumerate(albums_out) if isinstance(t, dict) and not t.get('duration')]
+        if albums_to_fetch:
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                fetch_ids = [albums_out[idx]['id'] for idx in albums_to_fetch]
+                for aid, dur in executor.map(self._fetch_am_album_duration, fetch_ids):
+                    if dur:
+                        for idx in albums_to_fetch:
+                            if albums_out[idx]['id'] == aid:
+                                albums_out[idx]['duration'] = dur
+
         return ArtistInfo(
-            name=attrs.get('name', 'Unknown Artist'),
+            name=artist_name,
             artist_id=artist_id,
-            albums=albums,
-            album_extra_kwargs={'country': country}
+            albums=albums_out,
+            album_extra_kwargs={**kwargs, 'country': country},
+            tracks=tracks_out,
+            track_extra_kwargs={**kwargs, 'country': country}
         )
+
+    def _fetch_am_playlist_meta(self, pid):
+        try:
+            p_data = self._run_async(lambda s: s.apple_music_api.get_playlist(pid))
+            if p_data and 'data' in p_data and len(p_data['data']) > 0:
+                attrs = p_data['data'][0].get('attributes', {})
+                tc = attrs.get('trackCount')
+                
+                rel_tracks = (p_data['data'][0].get('relationships') or {}).get('tracks', {}).get('data', [])
+                total_duration = None
+                if rel_tracks:
+                    sum_dur = sum(t.get('attributes', {}).get('durationInMillis', 0) for t in rel_tracks if isinstance(t.get('attributes'), dict))
+                    if sum_dur > 0:
+                        total_duration = sum_dur // 1000
+                
+                if tc is not None and tc > 0:
+                    return pid, tc, total_duration
+                    
+                # Fallback to relationship length
+                if rel_tracks:
+                    return pid, len(rel_tracks), total_duration
+        except: pass
+        return pid, None, None
+
+    def _fetch_am_album_duration(self, aid, storefront=None):
+        try:
+            a_data = self._run_async(lambda s: s.apple_music_api.get_album(aid), storefront=storefront)
+            if a_data and 'data' in a_data and len(a_data['data']) > 0:
+                rel_tracks = (a_data['data'][0].get('relationships') or {}).get('tracks', {}).get('data', [])
+                if rel_tracks:
+                    sum_dur = sum(t.get('attributes', {}).get('durationInMillis', 0) for t in rel_tracks if isinstance(t.get('attributes'), dict))
+                    if sum_dur > 0:
+                        return aid, sum_dur // 1000
+        except: pass
+        return aid, None
+
+    def _localize_url(self, url):
+        """Replace the country code in an Apple Music URL with the account storefront."""
+        if not url or not self.account_storefront:
+            return url
+        # Replace /us/, /gb/, /nl/ etc. with /account_storefront/
+        # Matches any 2-letter country code following music.apple.com/
+        import re
+        return re.sub(r'music\.apple\.com/[a-z]{2}/', f'music.apple.com/{self.account_storefront}/', url)
 
     def _get_cover_url(self, artwork_template):
         """Build a full cover URL from a template"""
         if not artwork_template:
             return None
-        # Replace template with high resolution
-        return artwork_template.replace('{w}x{h}bb.jpg', '1400x1400bb.jpg') 
+        
+        try:
+            # Get resolution from global settings, default to 1400
+            res = self.module_controller.orpheus_options.default_cover_options.resolution
+        except Exception as e:
+            if getattr(self, '_debug', False):
+                print(f"[Apple Music Error] Failed to get resolution from settings: {e}. Falling back to 1400.")
+            res = 1400
+            
+        # Replace template markers with resolution
+        return artwork_template.replace('{w}', str(res)).replace('{h}', str(res))
+
+    def _album_quality_label_from_attrs(self, attrs) -> Optional[str]:
+        """Short quality label for album folder names (discography disambiguation)."""
+        traits = attrs.get('audioTraits') or []
+        labels = []
+        if any(t in traits for t in ('atmos', 'spatial')):
+            labels.append('Atmos')
+        if 'hi-res-lossless' in traits:
+            labels.append('HI-RES')
+        elif 'lossless' in traits:
+            labels.append('Lossless')
+        return ' · '.join(labels) if labels else None
+
+    def _format_audio_traits(self, attrs, item_type=None):
+        """Format audio traits according to GUI display rules"""
+        if 'audioTraits' not in attrs:
+            return ""
+            
+        traits = []
+        has_atmos = False
+        is_lossless = False
+        
+        for trait in attrs['audioTraits']:
+            # 'lossy-stereo' is standard
+            if trait == 'lossy-stereo':
+                continue
+            elif trait == 'lossless':
+                is_lossless = True
+            elif trait in ('atmos', 'spatial'):
+                has_atmos = True
+            elif trait == 'hi-res-lossless':
+                traits.append('🅷 HI-RES')
+                is_lossless = True
+            else:
+                traits.append(trait.replace('-', ' ').title())
+                
+        if not is_lossless and item_type in ('songs', 'music-videos'):
+            traits.append('AAC only')
+                
+        if has_atmos:
+            # Add Atmos trait if detected, always first
+            traits.insert(0, '◗◖ ATMOS')
+            
+        return " / ".join(traits)
+
+    def _get_precise_alac_info(self, attrs, codec, quality_tier: QualityEnum = None):
+        """Fetch HLS manifest and parse audio group ID for exact bit depth and sample rate"""
+        # Lazy imports for gamdl logic
+        try:
+            from gamdl.interface.base import AppleMusicBaseInterface
+            from gamdl.interface.constants import SONG_CODEC_REGEX_MAP
+            import m3u8
+            import re
+        except ImportError:
+            return None
+
+        hls_url = attrs.get('extendedAssetUrls', {}).get('enhancedHls')
+        if not hls_url:
+            return None
+
+        async def _fetch_manifest():
+            try:
+                # Use gamdl's get_response utility (uses httpx)
+                response = await AppleMusicBaseInterface.get_response(hls_url)
+                m3u8_obj = m3u8.loads(response.text)
+                m3u8_data = m3u8_obj.data
+                
+                # Use gamdl's codec matching logic
+                codec_regex = SONG_CODEC_REGEX_MAP.get(codec.value)
+                if not codec_regex:
+                    return None
+                    
+                matching_playlists = [
+                    p for p in m3u8_data.get('playlists', [])
+                    if re.fullmatch(codec_regex, p["stream_info"]["audio"])
+                ]
+                
+                if not matching_playlists:
+                    return None
+                
+                # Filter for LOSSLESS (Standard Lossless) to avoid HI-RES (96k+) if requested
+                if codec.value == "alac" and quality_tier == QualityEnum.LOSSLESS:
+                    filtered = []
+                    for p in matching_playlists:
+                        audio_id = p["stream_info"]["audio"] 
+                        try:
+                            parts = audio_id.split('-')
+                            if len(parts) >= 4:
+                                sample_rate = int(parts[-2])
+                                if sample_rate <= 48000:
+                                    filtered.append(p)
+                            else:
+                                filtered.append(p)
+                        except:
+                            filtered.append(p)
+                    
+                    if filtered:
+                        matching_playlists = filtered
+
+                # Pick the highest bandwidth playlist for this codec (respecting our filter above)
+                target = max(matching_playlists, key=lambda x: x["stream_info"]["average_bandwidth"])
+                audio_group_id = target["stream_info"]["audio"] # e.g. "audio-alac-stereo-44100-24"
+                
+                # Parse audio-alac-stereo-SAMPLE_RATE-BIT_DEPTH
+                # Regex: audio-alac-(?:stereo|binaural|downmix)-(\d+)-(\d+)
+                match = re.search(r'-(\d+)-(\d+)$', audio_group_id)
+                if match:
+                    return {
+                        'sample_rate': int(match.group(1)),
+                        'bit_depth': int(match.group(2))
+                    }
+            except Exception as e:
+                if getattr(self, '_debug', False):
+                    print(f"[Apple Music Debug] Precise info fetch failed: {e}")
+            return None
+
+        # Run in our background event loop
+        return self._run_async(lambda s: _fetch_manifest())
+
+    def _resolve_all_binary_paths(self):
+        """Pre-resolve all binary paths to speed up future re-initializations"""
+        if hasattr(self, 'binary_paths'):
+            return
+            
+        if self._debug:
+            print("[Apple Music Debug] Resolving binary paths...")
+            
+        # Read main OrpheusDL settings.json for binary paths
+        main_settings = {}
+        settings_file = Path("./config/settings.json")
+        if settings_file.exists():
+            try:
+                with open(settings_file, 'r') as f:
+                    main_settings = json.load(f)
+            except Exception as e:
+                if self._debug:
+                    print(f"[Apple Music Debug] Could not read main settings.json: {e}")
+        
+        # Extract binary paths from main settings, fallback to defaults
+        ffmpeg_spec = main_settings.get("global", {}).get("advanced", {}).get("ffmpeg_path", "ffmpeg")
+        mp4box_spec = main_settings.get("global", {}).get("advanced", {}).get("mp4box_path", "MP4Box")
+        mp4decrypt_spec = main_settings.get("global", {}).get("advanced", {}).get("mp4decrypt_path", "mp4decrypt")
+        
+        # Helper to find and fix binaries
+        def resolve_binary_path(binary_name, default_path):
+            # If the user specified a custom path (not the default name), verify it exists
+            if default_path != binary_name:
+                return default_path
+
+            # Search paths for local binaries
+            search_paths = []
+            
+            # 1. Always check Application Support on macOS first
+            if platform.system() == "Darwin":
+                app_support = os.path.expanduser("~/Library/Application Support/OrpheusDL GUI")
+                search_paths.append(os.path.join(app_support, binary_name))
+            
+            # 2. Check relative to executable (frozen app)
+            if getattr(sys, 'frozen', False):
+                app_dir = os.path.dirname(sys.executable)
+                search_paths.append(os.path.join(app_dir, binary_name))
+                if platform.system() == "Darwin" and ".app/Contents/MacOS" in sys.executable:
+                    bundle_dir = os.path.dirname(os.path.dirname(os.path.dirname(sys.executable)))
+                    parent_dir = os.path.dirname(bundle_dir)
+                    search_paths.append(os.path.join(bundle_dir, binary_name)) 
+                    search_paths.append(os.path.join(parent_dir, binary_name))
+
+            # 3. Check CWD
+            search_paths.append(os.path.join(os.getcwd(), binary_name))
+            
+            # Check all search paths
+            for path in search_paths:
+                if os.path.isfile(path):
+                    if not os.access(path, os.X_OK):
+                        try:
+                            os.chmod(path, 0o755)
+                        except:
+                            pass
+                    return path
+            
+            # Fallback to system PATH
+            system_path = shutil.which(binary_name)
+            if system_path:
+                return system_path
+            
+            return binary_name
+
+        # Resolve all binaries
+        f_name = "ffmpeg.exe" if platform.system() == "Windows" else "ffmpeg"
+        mb_name = "mp4box.exe" if platform.system() == "Windows" else "MP4Box"
+        md_name = "mp4decrypt.exe" if platform.system() == "Windows" else "mp4decrypt"
+        nm_name = "N_m3u8DL-RE.exe" if platform.system() == "Windows" else "N_m3u8DL-RE"
+
+        self.binary_paths = {
+            'ffmpeg': resolve_binary_path(f_name, ffmpeg_spec),
+            'mp4box': resolve_binary_path(mb_name, mp4box_spec),
+            'mp4decrypt': resolve_binary_path(md_name, mp4decrypt_spec),
+            'nm3u8dlre': resolve_binary_path(nm_name, self.settings.get('nm3u8dlre_path', 'N_m3u8DL-RE'))
+        }
+
+
+        if self._debug:
+            print(f"[Apple Music Debug] Binary paths resolved: {self.binary_paths}")
