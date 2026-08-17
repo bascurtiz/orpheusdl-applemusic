@@ -53,7 +53,9 @@ And run the "Install Certificates.command" found in your Python application fold
 1. Make sure [OrpheusDL](https://github.com/bascurtiz/OrpheusDL) is installed.
 2. Clone this repository (`git clone https://github.com/bascurtiz/orpheusdl-applemusic`) or download the ZIP file.
 3. Ensure all files from this repository are placed in the `modules/applemusic` folder.
-4. Run Orpheus to create settings.json:<br>
+4. Install **gamdl >= 3.8.5** via pip (required — it ships the compiled Rust decrypt/mux engine):<br>
+   `pip install -U gamdl`<br>
+5. Run Orpheus to create settings.json:<br>
    `python orpheus.py`<br>
     <sub>*(use python3 on macOS)*</sub><br>
 

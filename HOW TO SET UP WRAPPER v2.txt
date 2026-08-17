@@ -1,0 +1,72 @@
+0. make sure Docker Desktop is installed: https://www.docker.com/products/docker-desktop
+(if already installed, ditch any container, image, volume build to start fresh)
+1. go to https://github.com/glomatico/wrapper-v2 and download as zip and extract.
+   IMPORTANT: make sure you have a recent wrapper-v2 build — gamdl >= 3.8.2 requires
+   wrapper-v2 API version 0.0.2 (the login/health/me endpoint reports this version).
+   Older wrapper-v2 builds that only expose the legacy HTTP POST /decrypt endpoint will
+   be rejected.
+2. download https://www.apkmirror.com/apk/apple/apple-music/apple-music-3-6-0-beta-release/apple-music-3-6-0-beta-4-android-apk-download/download/?key=33e844d607bccf95ad1dc8c3dc4be780edae73b8
+3. move it to the extracted folder and rename it to apple-music.apkm
+
+4. follow the instructions in the readme:
+a) bash tools/extract-libs.sh --bundle apple-music.apkm --arch x86_64
+b) bash tools/stage-system.sh --arch x86_64
+make sure Docker Desktop is running:
+c) docker compose up --build
+d) open a new CMD:
+   curl http://127.0.0.1/health
+e) curl -X POST http://127.0.0.1/login -H "content-type: application/json" -d "{\"username\":\"you@example.com\",\"password\":\"your-password\"}"
+(make sure to change username and password to your own)
+
+now u can close all.
+open OrpheusDL GUI > Settings > Apple Music > Enable to use wrapper on 127.0.0.1
+open Docker Desktop and run the container hitting the play-icon.
+
+Apple Music module requires gamdl >= 3.8.5 (ships the compiled Rust decrypt engine):
+   pip install -U gamdl
+
+gamdl 3.8.2+ decrypts over the WV2D batch TCP protocol instead of HTTP POST /decrypt:
+   - Wrapper URL (HTTP control API):       127.0.0.1  (port 80)
+   - Wrapper decrypt host (TCP):           127.0.0.1
+   - Wrapper decrypt port (TCP):           10020
+These three fields are exposed in Settings > Apple Music.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+seeunext2026@fra99.red
+FuckAppl3!

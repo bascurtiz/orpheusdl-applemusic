@@ -18,35 +18,28 @@ import concurrent.futures
 import datetime
 import threading
 
-# Add gamdl to the path without shadowing the Orpheus ``utils`` package.
-current_dir = Path(__file__).parent
-try:
-    from utils.vendor_bootstrap import insert_gamdl_sys_path, resolve_gamdl_package_root
-except ImportError:
-    def insert_gamdl_sys_path(modules_applemusic_dir):
-        root = Path(modules_applemusic_dir)
-        wrapper_root = root / "gamdl"
-        if (wrapper_root / "gamdl" / "__init__.py").is_file():
-            candidate = wrapper_root
-        elif (wrapper_root / "__init__.py").is_file():
-            candidate = root
-        else:
-            return None
-        if str(candidate) not in sys.path:
-            sys.path.insert(0, str(candidate))
-        return candidate
+# gamdl is a pip dependency (gamdl>=3.8.5 ships a compiled Rust decrypt/mux engine
+# as abi3 wheels, so it cannot be vendored as source).
 
-    def resolve_gamdl_package_root(modules_applemusic_dir):
-        root = Path(modules_applemusic_dir)
-        wrapper_root = root / "gamdl"
-        if (wrapper_root / "gamdl" / "__init__.py").is_file():
-            return wrapper_root / "gamdl"
-        if (wrapper_root / "__init__.py").is_file():
-            return wrapper_root
-        return None
 
-insert_gamdl_sys_path(current_dir)
-gamdl_path = resolve_gamdl_package_root(current_dir) or (current_dir / "gamdl")
+def _pip_gamdl_available() -> bool:
+    """Return True when gamdl is importable from the Python environment (pip install)."""
+    try:
+        import gamdl  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _gamdl_supports_tcp_decrypt() -> bool:
+    """Return True when the imported gamdl accepts WrapperApi.create decrypt_host/decrypt_port."""
+    try:
+        import inspect
+        params = inspect.signature(WrapperApi.create).parameters
+        return 'decrypt_host' in params and 'decrypt_port' in params
+    except Exception:
+        return False
+
 
 # Initialize gamdl availability check
 GAMDL_AVAILABLE = False
@@ -92,31 +85,11 @@ def _lazy_import_gamdl():
             sys.modules[mod_name] = _mock_instance
     # --- End of Patch ---
 
-    # Ensure gamdl path is in sys.path
-    current_dir = Path(__file__).parent
-    insert_gamdl_sys_path(current_dir)
-    gamdl_path = resolve_gamdl_package_root(current_dir) or (current_dir / "gamdl")
-    
-    # Debug: Check if gamdl directory exists
-    if not gamdl_path.exists():
-        print(f"[Apple Music Error] gamdl directory NOT found at: {gamdl_path}")
-        globals()['LAST_GAMDL_ERROR'] = f"gamdl directory NOT found at: {gamdl_path}"
+    if not _pip_gamdl_available():
+        print("[Apple Music Error] gamdl is not installed — run: pip install gamdl>=3.8.5")
+        globals()['LAST_GAMDL_ERROR'] = "gamdl not installed — run: pip install gamdl>=3.8.5"
         return False
-    
-    # Debug: Check if key files exist
-    apple_music_api_file = gamdl_path / "api" / "apple_music.py"
-    if not apple_music_api_file.exists():
-        msg = f"apple_music.py NOT found at: {apple_music_api_file}"
-        print(f"[Apple Music Error] {msg}")
-        globals()['LAST_GAMDL_ERROR'] = msg
-        return False
-    
-    # Debug: Show path info
-    # print(f"[Apple Music] gamdl path: {gamdl_path}")
-    # print(f"[Apple Music] gamdl path exists: {gamdl_path.exists()}")
-    # gamdl_paths_in_sys = [p for p in sys.path if 'gamdl' in p]
-    # print(f"[Apple Music] Current sys.path entries containing 'gamdl': {gamdl_paths_in_sys}")
-    
+
     # Temporarily fix subprocess.Popen to avoid conflicts with yt-dlp
     original_popen = None
     current_popen = None
@@ -266,6 +239,15 @@ def _lazy_import_gamdl():
         globals()['OrpheusAppleMusicSongInterface'] = OrpheusAppleMusicSongInterface
         globals()['GAMDL_AVAILABLE'] = True
         LAST_GAMDL_ERROR = None
+
+        # gamdl 3.8.2+ moved decryption to the WV2D TCP endpoint; the vendored copy
+        # cannot work without the compiled Rust extension, so warn when the installed
+        # gamdl is too old for the wrapper-v2 API 0.0.2 protocol.
+        if not _gamdl_supports_tcp_decrypt():
+            print(
+                "[Apple Music Warning] Installed gamdl is older than 3.8.2 — wrapper decryption "
+                "will use the legacy HTTP /decrypt endpoint. Run: pip install -U gamdl"
+            )
         return True
     except ImportError as e:
         error_msg = f"ImportError: {e}"
@@ -357,6 +339,8 @@ module_information = ModuleInformation(
         'cookies_path': './config/cookies.txt',
         'language': 'en-US',
         'use_wrapper': False,
+        # Base URL of wrapper-v2 (HTTP control API, port 80 by default). The WV2D
+        # TCP decrypt host/port are derived from this URL automatically.
         'wrapper_decrypt_ip': DEFAULT_WRAPPER_URL,
         'wrapper_restart_command': ''
     },
@@ -836,6 +820,56 @@ class ModuleInterface:
     def _get_wrapper_url(self) -> str:
         return normalize_wrapper_url(self.settings.get('wrapper_decrypt_ip'))
 
+    def _get_wrapper_decrypt_host(self) -> str:
+        """TCP host used by gamdl 3.8.2+ for WV2D batch decryption (wrapper-v2).
+
+        Derived from the wrapper URL host, so a single "Wrapper URL" setting drives
+        both the HTTP control API and the TCP decrypt endpoint. An explicit
+        wrapper_decrypt_host in settings still wins for non-standard setups.
+        """
+        explicit = (self.settings.get('wrapper_decrypt_host') or '').strip()
+        if explicit:
+            return explicit
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(self._get_wrapper_url()).hostname
+            if host:
+                return host
+        except Exception:
+            pass
+        return '127.0.0.1'
+
+    def _get_wrapper_decrypt_port(self) -> int:
+        """TCP port used by gamdl 3.8.2+ for WV2D batch decryption (wrapper-v2).
+
+        wrapper-v2 uses the fixed protocol port 10020; only override it via the
+        wrapper_decrypt_port setting for a non-default Docker port mapping.
+        """
+        try:
+            port = int(self.settings.get('wrapper_decrypt_port') or 10020)
+        except (TypeError, ValueError):
+            port = 10020
+        return port if 1 <= port <= 65535 else 10020
+
+    def _wrapper_create_kwargs(self) -> dict:
+        """Extra kwargs for WrapperApi.create, gated on the installed gamdl API.
+
+        gamdl 3.8.2+ moved decryption from HTTP POST /decrypt to the WV2D batch TCP
+        endpoint (decrypt_host/decrypt_port). Older gamdl accepts neither argument,
+        so only pass them when the installed version supports them.
+        """
+        try:
+            import inspect
+            params = inspect.signature(WrapperApi.create).parameters
+        except Exception:
+            return {}
+        kwargs = {}
+        if 'decrypt_host' in params:
+            kwargs['decrypt_host'] = self._get_wrapper_decrypt_host()
+        if 'decrypt_port' in params:
+            kwargs['decrypt_port'] = self._get_wrapper_decrypt_port()
+        return kwargs
+
     def _wrapper_display_url(self) -> str:
         return self._get_wrapper_url().replace("http://", "").replace("https://", "")
 
@@ -967,7 +1001,7 @@ class ModuleInterface:
                 wrapper_api = self.wrapper_api if requested_wrapper else None
                 if requested_wrapper and wrapper_api is None:
                     wrapper_url = self._get_wrapper_url()
-                    wrapper_api = await WrapperApi.create(base_url=wrapper_url)
+                    wrapper_api = await WrapperApi.create(base_url=wrapper_url, **self._wrapper_create_kwargs())
                     self.wrapper_api = wrapper_api
 
                 self.gamdl_base_interface = await AppleMusicBaseInterface.create(
@@ -1344,7 +1378,7 @@ class ModuleInterface:
                     wrapper_url = self._get_wrapper_url()
                     try:
                         if not getattr(self, '_wrapper_offline', False):
-                            self.wrapper_api = await WrapperApi.create(base_url=wrapper_url)
+                            self.wrapper_api = await WrapperApi.create(base_url=wrapper_url, **self._wrapper_create_kwargs())
                             self.apple_music_api = await AppleMusicApi.create_from_wrapper(
                                 wrapper_api=self.wrapper_api,
                                 language=language,
