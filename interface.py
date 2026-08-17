@@ -3018,11 +3018,17 @@ class ModuleInterface:
     def _format_audio_traits(self, attrs, item_type=None):
         """Format audio traits according to GUI display rules"""
         if 'audioTraits' not in attrs:
+            # Playlists don't expose per-playlist audioTraits; their catalog tracks
+            # stream lossless for subscribers. Show a Lossless badge so playlist rows
+            # don't look blank next to album/song rows.
+            if item_type == 'playlists':
+                return "Lossless"
             return ""
             
         traits = []
         has_atmos = False
         is_lossless = False
+        is_hires = False
         
         for trait in attrs['audioTraits']:
             # 'lossy-stereo' is standard
@@ -3035,11 +3041,16 @@ class ModuleInterface:
             elif trait == 'hi-res-lossless':
                 traits.append('🅷 HI-RES')
                 is_lossless = True
+                is_hires = True
             else:
                 traits.append(trait.replace('-', ' ').title())
                 
         if not is_lossless and item_type in ('songs', 'music-videos'):
             traits.append('AAC only')
+        elif is_lossless and not is_hires:
+            # Standard CD-quality lossless has no special audioTrait marker, so the
+            # Additional column would otherwise be blank. Show it explicitly.
+            traits.append('Lossless')
                 
         if has_atmos:
             # Add Atmos trait if detected, always first
@@ -3062,64 +3073,88 @@ class ModuleInterface:
         if not hls_url:
             return None
 
-        async def _fetch_manifest():
-            try:
-                # Use gamdl's get_response utility (uses httpx)
-                response = await AppleMusicBaseInterface.get_response(hls_url)
-                m3u8_obj = m3u8.loads(response.text)
-                m3u8_data = m3u8_obj.data
-                
-                # Use gamdl's codec matching logic
-                codec_regex = SONG_CODEC_REGEX_MAP.get(codec.value)
-                if not codec_regex:
-                    return None
-                    
-                matching_playlists = [
-                    p for p in m3u8_data.get('playlists', [])
-                    if re.fullmatch(codec_regex, p["stream_info"]["audio"])
-                ]
-                
-                if not matching_playlists:
-                    return None
-                
-                # Filter for LOSSLESS (Standard Lossless) to avoid HI-RES (96k+) if requested
-                if codec.value == "alac" and quality_tier == QualityEnum.LOSSLESS:
-                    filtered = []
-                    for p in matching_playlists:
-                        audio_id = p["stream_info"]["audio"] 
-                        try:
-                            parts = audio_id.split('-')
-                            if len(parts) >= 4:
-                                sample_rate = int(parts[-2])
-                                if sample_rate <= 48000:
-                                    filtered.append(p)
-                            else:
-                                filtered.append(p)
-                        except:
-                            filtered.append(p)
-                    
-                    if filtered:
-                        matching_playlists = filtered
+        # Cache successful probes per manifest URL so tracks of the same album
+        # display a consistent sample rate (and we don't hammer the CDN once per
+        # track). Only successful results are cached, so a transient failure never
+        # poisons the cache.
+        cache = getattr(self, '_precise_alac_cache', None)
+        if cache is None:
+            cache = self._precise_alac_cache = {}
+        cache_key = (codec.value, quality_tier, hls_url)
+        if cache_key in cache:
+            return cache[cache_key]
 
-                # Pick the highest bandwidth playlist for this codec (respecting our filter above)
-                target = max(matching_playlists, key=lambda x: x["stream_info"]["average_bandwidth"])
-                audio_group_id = target["stream_info"]["audio"] # e.g. "audio-alac-stereo-44100-24"
-                
-                # Parse audio-alac-stereo-SAMPLE_RATE-BIT_DEPTH
-                # Regex: audio-alac-(?:stereo|binaural|downmix)-(\d+)-(\d+)
-                match = re.search(r'-(\d+)-(\d+)$', audio_group_id)
-                if match:
-                    return {
-                        'sample_rate': int(match.group(1)),
-                        'bit_depth': int(match.group(2))
-                    }
-            except Exception as e:
-                if getattr(self, '_debug', False):
-                    print(f"[Apple Music Debug] Precise info fetch failed: {e}")
+        async def _fetch_manifest():
+            # Use gamdl's codec matching logic
+            codec_regex = SONG_CODEC_REGEX_MAP.get(codec.value)
+            if not codec_regex:
+                return None
+
+            # Retry a few times: HLS probes transiently fail under load/rate
+            # limits, and a single failed probe degrades the displayed sample
+            # rate to the 48kHz fallback even when the real stream is hi-res.
+            import asyncio
+            last_error = None
+            for attempt in range(3):
+                try:
+                    # Use gamdl's get_response utility (uses httpx)
+                    response = await AppleMusicBaseInterface.get_response(hls_url)
+                    m3u8_obj = m3u8.loads(response.text)
+                    m3u8_data = m3u8_obj.data
+
+                    matching_playlists = [
+                        p for p in m3u8_data.get('playlists', [])
+                        if re.fullmatch(codec_regex, p["stream_info"]["audio"])
+                    ]
+
+                    if not matching_playlists:
+                        return None
+
+                    # Filter for LOSSLESS (Standard Lossless) to avoid HI-RES (96k+) if requested
+                    if codec.value == "alac" and quality_tier == QualityEnum.LOSSLESS:
+                        filtered = []
+                        for p in matching_playlists:
+                            audio_id = p["stream_info"]["audio"]
+                            try:
+                                parts = audio_id.split('-')
+                                if len(parts) >= 4:
+                                    sample_rate = int(parts[-2])
+                                    if sample_rate <= 48000:
+                                        filtered.append(p)
+                                else:
+                                    filtered.append(p)
+                            except:
+                                filtered.append(p)
+
+                        if filtered:
+                            matching_playlists = filtered
+
+                    # Pick the highest bandwidth playlist for this codec (respecting our filter above)
+                    target = max(matching_playlists, key=lambda x: x["stream_info"]["average_bandwidth"])
+                    audio_group_id = target["stream_info"]["audio"] # e.g. "audio-alac-stereo-44100-24"
+
+                    # Parse audio-alac-stereo-SAMPLE_RATE-BIT_DEPTH
+                    # Regex: audio-alac-(?:stereo|binaural|downmix)-(\d+)-(\d+)
+                    match = re.search(r'-(\d+)-(\d+)$', audio_group_id)
+                    if match:
+                        return {
+                            'sample_rate': int(match.group(1)),
+                            'bit_depth': int(match.group(2))
+                        }
+                    return None
+                except Exception as e:
+                    last_error = e
+                    if attempt < 2:
+                        await asyncio.sleep(0.5 * (attempt + 1))
+            if getattr(self, '_debug', False) and last_error:
+                print(f"[Apple Music Debug] Precise info fetch failed after retries: {last_error}")
             return None
 
         # Run in our background event loop
-        return self._run_async(lambda s: _fetch_manifest())
+        result = self._run_async(lambda s: _fetch_manifest())
+        if result and len(cache) < 200:
+            cache[cache_key] = result
+        return result
 
     def _get_global_lyrics_settings(self) -> dict:
         """Read global lyrics settings from OrpheusDL config/settings.json."""
