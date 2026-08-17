@@ -1919,11 +1919,14 @@ class ModuleInterface:
             album_attrs = albums_rel[0].get('attributes', {}) if albums_rel else {}
 
             # Album artist: prefer album-level context so every track shares one value.
+            # Use the primary artist only so collaboration albums file under one artist
+            # instead of every credited artist.
             album_artist = resolve_album_artist_tag(
                 kwargs.get('album_artist'),
                 attrs.get('albumArtistName'),
                 album_attrs.get('artistName') if album_attrs else None,
                 attrs.get('artistName'),
+                primary_only=True,
             ) or (artists_list[0] if artists_list else 'Unknown Artist')
             
             if not record_label or not copyright_info:
@@ -2549,8 +2552,12 @@ class ModuleInterface:
             if 'url' in attrs:
                 attrs['url'] = self._localize_url(attrs['url'])
                 
-            album_artist = format_album_artist_tag(
+            album_artist_display = format_album_artist_tag(
                 attrs.get('albumArtistName') or attrs.get('artistName', '')
+            )
+            album_artist = format_album_artist_tag(
+                attrs.get('albumArtistName') or attrs.get('artistName', ''),
+                primary_only=True,
             )
             cover_url = self._get_cover_url(attrs.get('artwork', {}).get('url'))
             album_release_date = attrs.get('releaseDate')
@@ -2635,7 +2642,7 @@ class ModuleInterface:
 
             return AlbumInfo(
                 name=attrs['name'],
-                artist=album_artist,
+                artist=album_artist_display,
                 album_artist=album_artist,
                 artist_id=str(artist_id) if artist_id else None,
                 id=str(album_id),
