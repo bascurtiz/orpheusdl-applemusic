@@ -339,6 +339,9 @@ module_information = ModuleInformation(
         'cookies_path': './config/cookies.txt',
         'language': 'en-US',
         'use_wrapper': False,
+        # Optional: paste the 'media-user-token' cookie value directly instead of a
+        # cookies.txt export. Same token gamdl extracts from the cookies file.
+        'media_user_token': '',
         # Base URL of wrapper-v2 (HTTP control API, port 80 by default). The WV2D
         # TCP decrypt host/port are derived from this URL automatically.
         'wrapper_decrypt_ip': DEFAULT_WRAPPER_URL,
@@ -1391,18 +1394,32 @@ class ModuleInterface:
                         self.wrapper_api = None
 
                 if not getattr(self, 'apple_music_api', None):
-                    kwargs = {'language': language}
-                    if cookies_path and cookies_path.exists():
-                        kwargs['cookies_path'] = str(cookies_path)
+                    media_token = str(self.settings.get('media_user_token') or '').strip()
+                    if media_token:
+                        # Direct media-user-token auth (the same token gamdl extracts
+                        # from cookies.txt) — enables AAC/Lyrics/Videos without a cookies file.
                         try:
-                            self.apple_music_api = await AppleMusicApi.create_from_netscape_cookies(**kwargs)
-                        except Exception as ce:
+                            self.apple_music_api = await AppleMusicApi.create(
+                                media_user_token=media_token,
+                                language=language,
+                            )
+                        except Exception as me:
                             if self._debug:
-                                print(f"[Apple Music Debug] Cookie initialization failed: {ce}")
-                            raise self.exception(self._cookie_init_error_message(cookies_path, ce))
+                                print(f"[Apple Music Debug] Media token initialization failed: {me}")
+                            raise self.exception(f"Apple Music media token authentication failed: {me}")
                     else:
-                        kwargs.pop('cookies_path', None)
-                        self.apple_music_api = await AppleMusicApi.create(**kwargs)
+                        kwargs = {'language': language}
+                        if cookies_path and cookies_path.exists():
+                            kwargs['cookies_path'] = str(cookies_path)
+                            try:
+                                self.apple_music_api = await AppleMusicApi.create_from_netscape_cookies(**kwargs)
+                            except Exception as ce:
+                                if self._debug:
+                                    print(f"[Apple Music Debug] Cookie initialization failed: {ce}")
+                                raise self.exception(self._cookie_init_error_message(cookies_path, ce))
+                        else:
+                            kwargs.pop('cookies_path', None)
+                            self.apple_music_api = await AppleMusicApi.create(**kwargs)
 
                 if self.apple_music_api:
                     self.itunes_api = await ItunesApi.create(

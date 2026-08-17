@@ -34,10 +34,19 @@ Instructions for installing FFmpeg:<br>
 - macOS: https://phoenixnap.com/kb/ffmpeg-mac<br>
 - Windows: https://phoenixnap.com/kb/ffmpeg-windows<br>
 
-### 4. Cookies File
-You need to export your Apple Music cookies to authenticate.
+### 4. Authentication (cookies file OR media token)
+You need to authenticate with your Apple Music subscription. Pick **one** of these:
 
-**Steps to get cookies:**
+**Option A — Media token (simplest, no browser extension needed):**
+1. Log in to [Apple Music Web](https://music.apple.com) in your browser.
+2. Open Developer Tools (F12) → **Application** → **Storage** → **Cookies** → `https://music.apple.com`.
+3. Find the cookie named `media-user-token` and copy its value.
+4. Paste it into the **Media User Token** field in the Apple Music settings (or set `media_user_token` under `modules.applemusic` in `config/settings.json`).
+
+This enables AAC downloads, lyrics and videos with an active subscription — the same token the
+original `apple-music-downloader` and gamdl's cookies path use.
+
+**Option B — Cookies file:**
 1. Log in to [Apple Music Web](https://music.apple.com) in your browser.
 2. Export cookies using a browser extension like **Get cookies.txt LOCALLY**.
 3. Save as `cookies.txt` in the `/config` folder of OrpheusDL.
