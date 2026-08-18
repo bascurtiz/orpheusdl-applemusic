@@ -429,6 +429,24 @@ class ModuleInterface:
         try:
             self._run_async(self._setup_api_clients, allow_reinit=False)
         except Exception as e:
+            if self._is_ssl_certificate_error(e):
+                if platform.system() == "Darwin":  # macOS
+                    python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+                    raise self.exception(
+                        f"SSL Certificate Error on macOS detected!\n\n"
+                        f"To fix this issue, run this command in Terminal:\n"
+                        f"open '/Applications/Python {python_version}/Install Certificates.command'\n\n"
+                        f"Or install certificates manually:\n"
+                        f"pip3 install --upgrade certifi\n\n"
+                        f"This is a known macOS issue where Python doesn't use system certificates by default.\n"
+                        f"Original error: {e}"
+                    )
+                raise self.exception(
+                    f"SSL Certificate Error detected!\n\n"
+                    f"Try updating certificates with:\n"
+                    f"pip3 install --upgrade certifi\n\n"
+                    f"Original error: {e}"
+                )
             print(f"[Apple Music Error] Initial initialization failed: {e}")
 
     def _refresh_debug_mode(self):
@@ -443,6 +461,18 @@ class ModuleInterface:
     def _gamdl_quiet(self):
         """Context manager: suppress gamdl stdout noise when debug is off."""
         return nullcontext() if self._debug else suppress_gamdl_debug()
+
+    def _is_ssl_certificate_error(self, exception) -> bool:
+        """Return True when an exception looks like an SSL certificate verification failure."""
+        error_str = str(exception).lower()
+        ssl_error_indicators = [
+            "certificate verify failed",
+            "ssl: certificate_verify_failed",
+            "unable to get local issuer certificate",
+            "certificate_verify_failed",
+            "ssl certificate problem",
+        ]
+        return any(indicator in error_str for indicator in ssl_error_indicators)
 
     def _cookies_path(self) -> Optional[Path]:
         """Configured cookies path if it exists, else ./config/cookies.txt, else None."""
@@ -1155,7 +1185,8 @@ class ModuleInterface:
         if self.is_authenticated and self.apple_music_api:
             return
         raise self.exception(
-            'Apple Music cookies are required for downloading. Please provide cookies.txt in /config folder.'
+            'Apple Music authentication is required for downloading. Please provide '
+            'cookies.txt in the /config folder or fill in the Media User Token in Settings → Apple Music.'
         )
 
     async def _setup_api_clients(self):
@@ -1188,27 +1219,30 @@ class ModuleInterface:
                         self.wrapper_api = None
 
                 if not getattr(self, 'apple_music_api', None):
-                    media_token = str(self.settings.get('media_user_token') or '').strip()
-                    if media_token:
-                        # Direct media-user-token auth (the same token gamdl extracts
-                        # from cookies.txt) — enables AAC/Lyrics/Videos without a cookies file.
+                    if cookies_path and cookies_path.exists():
+                        # Prefer cookies.txt when present.
                         try:
-                            self.apple_music_api = await AppleMusicApi.create(
-                                media_user_token=media_token,
+                            self.apple_music_api = await AppleMusicApi.create_from_netscape_cookies(
+                                cookies_path=str(cookies_path),
                                 language=language,
                             )
-                        except Exception as me:
-                            if self._debug: print(f"[Apple Music Debug] Media token initialization failed: {me}")
-                            raise self.exception(f"Apple Music media token authentication failed: {me}")
+                        except Exception as ce:
+                            if self._debug: print(f"[Apple Music Debug] Cookie initialization failed: {ce}")
+                            raise self.exception(self._cookie_init_error_message(cookies_path, ce))
                     else:
-                        kwargs = {'language': language}
-                        if cookies_path and cookies_path.exists():
-                            kwargs['cookies_path'] = str(cookies_path)
+                        media_token = str(self.settings.get('media_user_token') or '').strip()
+                        if media_token:
+                            # Fall back to direct media-user-token auth (the same token
+                            # gamdl extracts from cookies.txt) — enables AAC/Lyrics/Videos
+                            # without a cookies file.
                             try:
-                                self.apple_music_api = await AppleMusicApi.create_from_netscape_cookies(**kwargs)
-                            except Exception as ce:
-                                if self._debug: print(f"[Apple Music Debug] Cookie initialization failed: {ce}")
-                                raise self.exception(self._cookie_init_error_message(cookies_path, ce))
+                                self.apple_music_api = await AppleMusicApi.create(
+                                    media_user_token=media_token,
+                                    language=language,
+                                )
+                            except Exception as me:
+                                if self._debug: print(f"[Apple Music Debug] Media token initialization failed: {me}")
+                                raise self.exception(f"Apple Music media token authentication failed: {me}")
                         else:
                             self.apple_music_api = await AppleMusicApi.create(language=language)
 
